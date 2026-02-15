@@ -60,13 +60,17 @@ try:
         BLOG_OUTPUT_DIR = config.BLOG_OUTPUT_DIR
         SCRIPT_OUTPUT_DIR = config.SCRIPT_OUTPUT_DIR
         DOWNLOAD_DIR = config.DOWNLOAD_DIR
+        GEMINI_MODEL_NAME = getattr(config, 'GEMINI_MODEL_NAME', 'gemini-1.5-flash')
         logger.info("config.py から設定を読み込みました")
     else:
-        # 環境変数から読み込む場合は、出力ディレクトリをデフォルト値に
-        BLOG_OUTPUT_DIR = os.path.join(os.path.dirname(__file__), '..', 'output', 'blog')
-        SCRIPT_OUTPUT_DIR = os.path.join(os.path.dirname(__file__), '..', 'output', 'script')
-        DOWNLOAD_DIR = os.path.join(os.path.expanduser('~'), 'Downloads', 'Auto_MHLW')
+        # 環境変数から読み込む場合は、出力ディレクトリをリポジトリルートに
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        BLOG_OUTPUT_DIR = os.path.join(base_dir, 'output', 'blog')
+        SCRIPT_OUTPUT_DIR = os.path.join(base_dir, 'output', 'script')
+        DOWNLOAD_DIR = os.path.join(base_dir, 'downloads')
+        GEMINI_MODEL_NAME = os.environ.get('GEMINI_MODEL_NAME', 'gemini-1.5-flash')
         logger.info("環境変数から設定を読み込みました")
+        logger.info(f"  出力先: {BLOG_OUTPUT_DIR}")
     
     # 出力ディレクトリを作成
     os.makedirs(BLOG_OUTPUT_DIR, exist_ok=True)
@@ -77,14 +81,8 @@ except (ImportError, AttributeError) as e:
     logger.error(f"設定の読み込みに失敗: {e}")
     sys.exit(1)
 
-# Gemini API設定  
-genai.configure(api_key=GEMINI_API_KEY)
-# config.pyからモデル名を取得、なければデフォルト値
-try:
-    import config
-    GEMINI_MODEL = config.GEMINI_MODEL_NAME
-except:
-    GEMINI_MODEL = "gemini-1.5-flash"  # デフォルト
+# Gemini API設定は後ほど（GEMINI_MODEL_NAMEの読み込み後に実行）
+GEMINI_MODEL_NAME = None  # 初期化
 
 # プロンプト定義（analyze_url.py / analyze_pdf.py から移植）
 PROMPT_BLOG = """
@@ -167,7 +165,10 @@ class NotionContentGenerator:
             "Content-Type": "application/json"
         }
         self.base_url = "https://api.notion.com/v1"
-        self.model = genai.GenerativeModel(GEMINI_MODEL)
+        
+        # Gemini API設定
+        genai.configure(api_key=GEMINI_API_KEY)
+        self.model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 
     def query_database(self, filter_conditions: Optional[Dict] = None) -> List[Dict]:
         """Notionデータベースをクエリ"""
