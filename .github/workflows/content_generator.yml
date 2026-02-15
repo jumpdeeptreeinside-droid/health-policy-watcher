@@ -1,0 +1,59 @@
+name: コンテンツ自動生成
+
+on:
+  # 1日2回実行（JST 10:00, 22:00 = UTC 1:00, 13:00）
+  schedule:
+    - cron: '0 1,13 * * *'
+  
+  # 手動実行も可能
+  workflow_dispatch:
+
+jobs:
+  generate-content:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+      
+      - name: Python環境をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 依存関係をインストール
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: コンテンツを自動生成
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          cd src
+          python notion_content_generator.py
+      
+      - name: 生成されたファイルをコミット
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add output/blog/*.md output/script/*.md
+          git diff --quiet && git diff --staged --quiet || git commit -m "自動生成: コンテンツ追加 [$(date +'%Y-%m-%d %H:%M')]"
+      
+      - name: 変更をプッシュ
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
+      
+      - name: ログをアップロード（エラー時）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generator-error-logs
+          path: |
+            notion_content_generator.log
+          retention-days: 7
