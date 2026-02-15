@@ -1,0 +1,46 @@
+name: 医療政策ニュース自動収集
+
+on:
+  # 毎日 日本時間 9:00 (UTC 0:00) に実行
+  schedule:
+    - cron: '0 0 * * *'
+  
+  # 手動実行も可能
+  workflow_dispatch:
+
+jobs:
+  fetch-news:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+      
+      - name: Python環境をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 依存関係をインストール
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: ニュースを収集してNotionに追加
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          cd src
+          python fetch_news_to_notion.py
+      
+      - name: ログをアップロード（エラー時）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-logs
+          path: |
+            fetch_news.log
+          retention-days: 7

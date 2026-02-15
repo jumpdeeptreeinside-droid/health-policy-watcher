@@ -1,0 +1,9 @@
+requests
+beautifulsoup4
+google-genai
+python-frontmatter
+Markdown
+pydub
+openai
+notion-client
+feedparser
