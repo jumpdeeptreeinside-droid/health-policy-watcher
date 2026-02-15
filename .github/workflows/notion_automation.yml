@@ -1,0 +1,45 @@
+name: Notionステータス自動更新
+
+on:
+  # 1時間ごとに実行（毎時0分）
+  schedule:
+    - cron: '0 * * * *'
+  
+  # 手動実行も可能
+  workflow_dispatch:
+
+jobs:
+  update-notion-status:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+      
+      - name: Python環境をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 依存関係をインストール
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Notionステータスを自動更新
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        run: |
+          cd src
+          python notion_status_automation.py
+      
+      - name: ログをアップロード（エラー時）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: automation-error-logs
+          path: |
+            notion_automation.log
+          retention-days: 7
