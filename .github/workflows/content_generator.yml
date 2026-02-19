@@ -37,8 +37,10 @@ jobs:
           NOTION_API_KEY:     ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
-          # モデルを変更したい場合は GEMINI_MODEL を設定（デフォルト: gemini-2.0-flash）
-          # GEMINI_MODEL: gemini-1.5-pro
+          # GEMINI_MODEL を Secret に設定することでモデルを変更可能
+          # 推奨: gemini-3-pro-preview（ローカルと同品質）
+          # 未設定の場合は gemini-2.0-flash を使用
+          GEMINI_MODEL:       ${{ secrets.GEMINI_MODEL }}
         run: |
           python src/github_content_generator.py
 
