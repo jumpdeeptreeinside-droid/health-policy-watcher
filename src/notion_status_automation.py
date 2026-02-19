@@ -4,9 +4,9 @@
 Notionデータベースのステータス自動更新スクリプト
 
 機能:
-1. Status(コンテンツ作成)が「完了」の場合:
-   - Status(Web)を「投稿待ち」に自動変更
-   - Status(Podcast)を「音声化待ち」に自動変更
+1. Status(コンテンツ作成)が「コンテンツ作成完了」の場合:
+   - Status(Web)を「デフォルト」→「投稿待ち」に自動変更
+   - Status(Podcast)を「デフォルト」→「音声化待ち」に自動変更
 
 2. 日付の自動記録:
    - Date(Select): Status(コンテンツ作成)が「デフォルト」→「執筆待ち」に変更時
@@ -151,22 +151,22 @@ class NotionAutomation:
 
     def process_content_complete_status(self) -> int:
         """
-        Status(コンテンツ作成)が「完了」のページを処理
+        Status(コンテンツ作成)が「コンテンツ作成完了」のページを処理
         
         処理内容:
-        - Status(Web)を「投稿待ち」に変更
-        - Status(Podcast)を「音声化待ち」に変更
+        - Status(Web)が「デフォルト」の場合のみ「投稿待ち」に変更
+        - Status(Podcast)が「デフォルト」の場合のみ「音声化待ち」に変更
 
         Returns:
             処理したページ数
         """
-        logger.info("Status(コンテンツ作成)が「完了」のページを検索中...")
+        logger.info("Status(コンテンツ作成)が「コンテンツ作成完了」のページを検索中...")
         
-        # フィルター: Status(コンテンツ作成) = "完了"
+        # フィルター: Status(コンテンツ作成) = "コンテンツ作成完了"
         filter_conditions = {
             "property": "Status(コンテンツ作成)",
             "status": {
-                "equals": "完了"
+                "equals": "コンテンツ作成完了"
             }
         }
         
