@@ -1,9 +1,9 @@
 name: 医療政策ニュース自動収集
 
 on:
-  # 毎日 日本時間 9:00 (UTC 0:00) に実行
+  # 毎日 日本時間 18:00 (UTC 9:00) に実行
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 18 * * *'
   
   # 手動実行も可能
   workflow_dispatch:
