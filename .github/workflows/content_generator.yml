@@ -3,7 +3,8 @@ name: コンテンツ自動生成 (Health Policy Watcher)
 on:
   # 毎日 JST 9:00（UTC 0:00）に自動実行
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 3 * * *'
+    - cron: '0 12 * * *'
 
   # GitHub Actions 画面から手動実行も可能
   workflow_dispatch:
