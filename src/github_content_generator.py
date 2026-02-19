@@ -805,8 +805,14 @@ def save_to_notion(
     # ────── ブログ記事ページ ──────────────────
     blog_title, blog_body = extract_title_from_markdown(blog_content)
 
-    # ページ冒頭に引用元情報を追加
-    header_blocks: list[dict] = [
+    # 構成:
+    #   [引用元情報]
+    #   ──────────
+    #   [temp id=3]
+    #   （本文）
+    #   [temp id=2]
+    blog_blocks: list[dict] = [
+        # 引用元
         _block("quote", [
             _make_rich_text("引用元: "),
             {
@@ -815,8 +821,12 @@ def save_to_notion(
             },
         ]),
         {"object": "block", "type": "divider", "divider": {}},
+        # テンプレートタグ（先頭）
+        _block("paragraph", [_make_rich_text("[temp id=3]")]),
+    ] + markdown_to_notion_blocks(blog_body) + [
+        # テンプレートタグ（末尾）
+        _block("paragraph", [_make_rich_text("[temp id=2]")]),
     ]
-    blog_blocks = header_blocks + markdown_to_notion_blocks(blog_body)
 
     logger.info(f"  ブログ記事ページを作成中: {blog_title[:50]}")
     blog_page_id = notion.create_child_page(parent_page_id, blog_title, blog_blocks)
@@ -825,9 +835,8 @@ def save_to_notion(
     time.sleep(1)
 
     # ────── Podcast 台本ページ ───────────────
-    # 台本のタイトルはブログ記事と同じにする
-    # （AIが # を省略する場合があるためブログタイトルから確実に取得）
-    script_title = f"[台本] {blog_title}"
+    # タイトルはブログ記事と同じ（[台本] プレフィックスなし）
+    script_title = blog_title
 
     # 台本本文から # ヘッダー行を除去（あれば）
     script_lines = script_content.splitlines()
