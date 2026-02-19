@@ -5,8 +5,8 @@ Notionデータベースのステータス自動更新スクリプト
 
 機能:
 1. Status(コンテンツ作成)が「コンテンツ作成完了」の場合:
-   - Status(Web)を「デフォルト」→「投稿待ち」に自動変更
-   - Status(Podcast)を「デフォルト」→「音声化待ち」に自動変更
+   - Status(Web)を「-」（デフォルト）→「投稿待ち」に自動変更
+   - Status(Podcast)を「-」（デフォルト）→「音声化待ち」に自動変更
 
 2. 日付の自動記録:
    - Date(Select): Status(コンテンツ作成)が「デフォルト」→「執筆待ち」に変更時
@@ -154,8 +154,8 @@ class NotionAutomation:
         Status(コンテンツ作成)が「コンテンツ作成完了」のページを処理
         
         処理内容:
-        - Status(Web)が「デフォルト」の場合のみ「投稿待ち」に変更
-        - Status(Podcast)が「デフォルト」の場合のみ「音声化待ち」に変更
+        - Status(Web)が「-」（デフォルト）の場合のみ「投稿待ち」に変更
+        - Status(Podcast)が「-」（デフォルト）の場合のみ「音声化待ち」に変更
 
         Returns:
             処理したページ数
@@ -190,8 +190,8 @@ class NotionAutomation:
             # 更新するプロパティを準備
             properties_to_update = {}
             
-            # Status(Web)が「デフォルト」の場合のみ「投稿待ち」に変更
-            if not status_web or status_web == "デフォルト":
+            # Status(Web)が「-」（デフォルト）の場合のみ「投稿待ち」に変更
+            if not status_web or status_web == "-":
                 properties_to_update["Status(Web)"] = {
                     "status": {
                         "name": "投稿待ち"
@@ -199,8 +199,8 @@ class NotionAutomation:
                 }
                 logger.info("  → Status(Web)を「投稿待ち」に変更")
             
-            # Status(Podcast)が「デフォルト」の場合のみ「音声化待ち」に変更
-            if not status_podcast or status_podcast == "デフォルト":
+            # Status(Podcast)が「-」（デフォルト）の場合のみ「音声化待ち」に変更
+            if not status_podcast or status_podcast == "-":
                 properties_to_update["Status(Podcast)"] = {
                     "status": {
                         "name": "音声化待ち"
