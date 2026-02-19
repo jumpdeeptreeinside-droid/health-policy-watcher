@@ -1,0 +1,53 @@
+name: コンテンツ自動生成 (Health Policy Watcher)
+
+on:
+  # 毎日 JST 9:00（UTC 0:00）に自動実行
+  schedule:
+    - cron: '0 0 * * *'
+
+  # GitHub Actions 画面から手動実行も可能
+  workflow_dispatch:
+
+jobs:
+  generate-content:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60   # 最大60分（PDF処理込みで余裕を持たせる）
+
+    steps:
+      # ── 1. リポジトリをチェックアウト ──────────────────────
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      # ── 2. Python 環境のセットアップ ───────────────────────
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. 依存パッケージのインストール ────────────────────
+      - name: 依存パッケージをインストール
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 4. コンテンツ生成スクリプトを実行 ──────────────────
+      - name: コンテンツ自動生成を実行
+        env:
+          NOTION_API_KEY:     ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
+          # モデルを変更したい場合は GEMINI_MODEL を設定（デフォルト: gemini-2.0-flash）
+          # GEMINI_MODEL: gemini-1.5-pro
+        run: |
+          python src/github_content_generator.py
+
+      # ── 5. ログをアーティファクトとして保存（失敗時）──────
+      - name: ログをアップロード（失敗時のみ）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: content-generator-error-log-${{ github.run_id }}
+          path: |
+            *.log
+          retention-days: 7
