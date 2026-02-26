@@ -5,8 +5,13 @@
 
 対応情報源:
 1. 厚生労働省 (MHLW) - RSS
-2. 日本医療政策機構 (HGPI) - Webスクレイピング
-3. WHO - Webスクレイピング
+2. 財務省 (MOF) - RSS
+3. 内閣府 (CAO) - RSS (RDF形式)
+4. World Bank (Health) - 公式Search API (Healthトピック絞り込み)
+5. UN News (Health) - RSS (WHO・UNICEF・UNAIDS等を網羅)
+6. FIP - Webスクレイピング (プレスリリースページ)
+7. 日本医療政策機構 (HGPI) - Webスクレイピング
+8. WHO - 公式JSON API
 
 機能:
 - 各情報源から最新ニュース記事のタイトルとURLを取得
@@ -135,6 +140,298 @@ class NewsCollector:
         
         return articles
 
+    def fetch_mof_rss(self, limit: int = 20) -> List[NewsArticle]:
+        """
+        財務省のRSSフィードから最新ニュースを取得
+
+        Args:
+            limit: 取得する記事の最大数
+
+        Returns:
+            NewsArticleのリスト
+        """
+        logger.info("財務省 RSS を取得中...")
+        articles = []
+
+        try:
+            rss_url = "https://www.mof.go.jp/news.rss"
+            feed = feedparser.parse(rss_url)
+
+            if feed.bozo:
+                logger.warning(f"財務省 RSS解析エラー: {feed.bozo_exception}")
+
+            for entry in feed.entries[:limit]:
+                title = entry.get('title', 'タイトルなし')
+                link = entry.get('link', '')
+                published = entry.get('published', None)
+
+                if link:
+                    article = NewsArticle(
+                        title=title,
+                        url=link,
+                        source="MOF",
+                        published_date=published
+                    )
+                    articles.append(article)
+
+            logger.info(f"✅ 財務省: {len(articles)} 件の記事を取得")
+
+        except Exception as e:
+            logger.error(f"❌ 財務省 RSS取得エラー: {e}")
+
+        return articles
+
+    def fetch_cao_rss(self, limit: int = 20) -> List[NewsArticle]:
+        """
+        内閣府のRSSフィード（RDF形式）から最新ニュースを取得
+
+        Args:
+            limit: 取得する記事の最大数
+
+        Returns:
+            NewsArticleのリスト
+        """
+        logger.info("内閣府 RSS を取得中...")
+        articles = []
+
+        try:
+            rss_url = "https://www.cao.go.jp/rss/news.rdf"
+            feed = feedparser.parse(rss_url)
+
+            if feed.bozo:
+                logger.warning(f"内閣府 RSS解析エラー: {feed.bozo_exception}")
+
+            for entry in feed.entries[:limit]:
+                title = entry.get('title', 'タイトルなし')
+                link = entry.get('link', '')
+                # RDF形式では dc:date を使用
+                published = entry.get('dc_date', entry.get('published', None))
+
+                if link:
+                    article = NewsArticle(
+                        title=title,
+                        url=link,
+                        source="CAO",
+                        published_date=published
+                    )
+                    articles.append(article)
+
+            logger.info(f"✅ 内閣府: {len(articles)} 件の記事を取得")
+
+        except Exception as e:
+            logger.error(f"❌ 内閣府 RSS取得エラー: {e}")
+
+        return articles
+
+    def fetch_worldbank_health_news(self, limit: int = 20) -> List[NewsArticle]:
+        """
+        World Bank の公式Search APIからHealthトピックの最新ニュースを取得
+
+        World Bankのニュースページ (/en/news/all?topic_exact=Health) はJS動的レンダリングのため
+        スクレイピング不可。代わりに公式Search APIを使用する。
+        - エンドポイント: https://search.worldbank.org/api/v2/news
+        - Healthトピックに絞り込み、公開日降順で取得
+
+        Args:
+            limit: 取得する記事の最大数
+
+        Returns:
+            NewsArticleのリスト
+        """
+        logger.info("World Bank (Health) ニュースを取得中 (Search API)...")
+        articles = []
+
+        # 対象とするコンテンツタイプ（BriefやPublicationは除外）
+        NEWS_TYPES = {
+            "Press Release", "Feature Story", "Factsheet",
+            "News Release", "Speech", "Op-Ed", "Results Brief"
+        }
+
+        try:
+            api_url = (
+                "https://search.worldbank.org/api/v2/news"
+                f"?format=json&lang_exact=English&topic_exact=Health"
+                f"&rows={limit * 3}&os=0&srt=lnchdt&order=desc"
+            )
+            response = requests.get(api_url, headers=HEADERS, timeout=30)
+            response.raise_for_status()
+
+            data = response.json()
+            documents = data.get("documents", {})
+
+            # dict形式で返るため、facetsキーを除いてリスト化し、日付降順でソート
+            items = [
+                v for k, v in documents.items()
+                if k != "facets" and isinstance(v, dict)
+            ]
+            items.sort(key=lambda x: x.get("lnchdt", ""), reverse=True)
+
+            for item in items:
+                conttype = item.get("conttype", "")
+                if conttype not in NEWS_TYPES:
+                    continue
+
+                title = item.get("title", "")
+                if isinstance(title, dict):
+                    title = title.get("cdata!", "")
+                title = title.strip()
+
+                url = item.get("url", "").strip()
+                published = item.get("lnchdt", None)
+
+                if not title or not url:
+                    continue
+
+                # http → https に正規化
+                if url.startswith("http://"):
+                    url = "https://" + url[7:]
+
+                article = NewsArticle(
+                    title=title,
+                    url=url,
+                    source="WorldBank",
+                    published_date=published
+                )
+                articles.append(article)
+
+                if len(articles) >= limit:
+                    break
+
+            logger.info(f"✅ World Bank (Health): {len(articles)} 件の記事を取得")
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ World Bank ニュース取得エラー (ネットワーク): {e}")
+        except Exception as e:
+            logger.error(f"❌ World Bank ニュース取得エラー: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return articles
+
+    def fetch_un_news_health_rss(self, limit: int = 20) -> List[NewsArticle]:
+        """
+        UN News の Health トピック RSS フィードから最新記事を取得
+
+        WHO・UNICEF・UNAIDS 等の国連機関によるHealth関連ニュースを網羅。
+        unicef.org はCloudflare保護のため直接アクセス不可のため、こちらで代替。
+
+        Args:
+            limit: 取得する記事の最大数
+
+        Returns:
+            NewsArticleのリスト
+        """
+        logger.info("UN News (Health) RSS を取得中...")
+        articles = []
+
+        try:
+            rss_url = "https://news.un.org/feed/subscribe/en/news/topic/health/feed/rss.xml"
+            feed = feedparser.parse(rss_url)
+
+            if feed.bozo:
+                logger.warning(f"UN News RSS解析エラー: {feed.bozo_exception}")
+
+            for entry in feed.entries[:limit]:
+                title = entry.get('title', 'タイトルなし')
+                # guid (perma link) が本来のURL、link はfeed viewer経由のURLのため guid を優先
+                link = entry.get('id', entry.get('link', ''))
+                published = entry.get('published', None)
+
+                if link:
+                    article = NewsArticle(
+                        title=title,
+                        url=link,
+                        source="UN News",
+                        published_date=published
+                    )
+                    articles.append(article)
+
+            logger.info(f"✅ UN News (Health): {len(articles)} 件の記事を取得")
+
+        except Exception as e:
+            logger.error(f"❌ UN News RSS取得エラー: {e}")
+
+        return articles
+
+    def fetch_fip_news(self, limit: int = 20) -> List[NewsArticle]:
+        """
+        FIP (International Pharmaceutical Federation) のプレスリリースページから最新記事を取得
+
+        HTMLが静的レンダリングのためBeautifulSoupでスクレイピング可能。
+        ページ構造: 各<a>タグに「タイトル More 場所 • 日付」が一体で格納されている。
+
+        Args:
+            limit: 取得する記事の最大数
+
+        Returns:
+            NewsArticleのリスト
+        """
+        import re
+        logger.info("FIP プレスリリースを取得中...")
+        articles = []
+
+        try:
+            url = "https://www.fip.org/press-releases"
+            response = requests.get(url, headers=HEADERS, timeout=30)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # フィーチャー記事（article タグ）を取得
+            featured = soup.find('article')
+            if featured:
+                a_tag = featured.find('a', href=True)
+                if a_tag and 'press-item' in a_tag.get('href', ''):
+                    raw = a_tag.get_text(separator=' ', strip=True)
+                    title = re.split(r'\s+More\s+', raw)[0].strip()
+                    href = a_tag['href']
+                    if href.startswith('./'):
+                        href = 'https://www.fip.org/' + href[2:]
+                    date_match = re.search(r'\d+\s+\w+\s+\d{4}', raw)
+                    published = date_match.group(0) if date_match else None
+                    if title:
+                        articles.append(NewsArticle(
+                            title=title, url=href, source="FIP", published_date=published
+                        ))
+
+            # アーカイブリスト（タイトルテキスト付きの press-item リンク）
+            links = [
+                a for a in soup.find_all('a', href=True)
+                if 'press-item' in a.get('href', '') and a.get_text(strip=True) != 'More'
+            ]
+
+            for a_tag in links:
+                if len(articles) >= limit:
+                    break
+                raw = a_tag.get_text(separator=' ', strip=True)
+                # "タイトル More 場所 • 日付" 形式を分割
+                parts = re.split(r'\s+More\s+', raw, maxsplit=1)
+                title = parts[0].strip()
+
+                href = a_tag['href']
+                if href.startswith('./'):
+                    href = 'https://www.fip.org/' + href[2:]
+                elif href.startswith('/'):
+                    href = 'https://www.fip.org' + href
+
+                date_match = re.search(r'\d+\s+\w+\s+\d{4}', raw)
+                published = date_match.group(0) if date_match else None
+
+                if title and href:
+                    articles.append(NewsArticle(
+                        title=title, url=href, source="FIP", published_date=published
+                    ))
+
+            logger.info(f"✅ FIP: {len(articles)} 件の記事を取得")
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ FIP プレスリリース取得エラー (ネットワーク): {e}")
+        except Exception as e:
+            logger.error(f"❌ FIP プレスリリース取得エラー: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return articles
+
     def fetch_hgpi_news(self, limit: int = 20) -> List[NewsArticle]:
         """
         日本医療政策機構(HGPI)のニュースページから最新記事を取得
@@ -229,9 +526,12 @@ class NewsCollector:
 
     def fetch_who_news(self, limit: int = 20) -> List[NewsArticle]:
         """
-        WHO (World Health Organization) のニュースページから最新記事を取得
-        
-        WHOはRSSフィードも提供しているため、まずRSSを試し、失敗した場合はWebスクレイピングにフォールバック
+        WHO (World Health Organization) の公式JSON APIから最新記事を取得
+
+        WHOのニュースページはJavaScriptで動的レンダリングされるため、
+        requests によるスクレイピングでは "Loading..." しか取得できない。
+        旧RSSフィード (feeds/entity/mediacentre/news/en/rss.xml) も廃止済み。
+        代わりに公式のREST APIエンドポイントを使用する。
 
         Args:
             limit: 取得する記事の最大数
@@ -239,112 +539,51 @@ class NewsCollector:
         Returns:
             NewsArticleのリスト
         """
-        logger.info("WHO ニュースを取得中...")
+        logger.info("WHO ニュースを取得中 (公式JSON API)...")
         articles = []
-        
-        # 方法1: RSSフィードを試す
+
         try:
-            rss_url = "https://www.who.int/feeds/entity/mediacentre/news/en/rss.xml"
-            feed = feedparser.parse(rss_url)
-            
-            if not feed.bozo and len(feed.entries) > 0:
-                logger.info("WHO RSS フィードから取得します")
-                for entry in feed.entries[:limit]:
-                    title = entry.get('title', 'タイトルなし')
-                    link = entry.get('link', '')
-                    published = entry.get('published', None)
-                    
-                    if link:
-                        article = NewsArticle(
-                            title=title,
-                            url=link,
-                            source="WHO",
-                            published_date=published
-                        )
-                        articles.append(article)
-                
-                logger.info(f"✅ WHO (RSS): {len(articles)} 件の記事を取得")
-                return articles
-        except Exception as e:
-            logger.warning(f"WHO RSS取得失敗、Webスクレイピングにフォールバック: {e}")
-        
-        # 方法2: Webスクレイピング
-        try:
-            news_url = "https://www.who.int/news"
-            response = requests.get(news_url, headers=HEADERS, timeout=30)
+            api_url = (
+                "https://www.who.int/api/news/articles"
+                f"?sf_culture=en&$top={limit}&$orderby=PublicationDate+desc"
+            )
+            response = requests.get(api_url, headers=HEADERS, timeout=30)
             response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # WHOのニュース記事を探す
-            news_items = []
-            
-            # パターン1: リスト内のh2/h3/h4リンク
-            headings = soup.find_all(['h2', 'h3', 'h4'], limit=limit*3)
-            for heading in headings:
-                link_tag = heading.find('a', href=True)
-                if link_tag:
-                    title = heading.get_text(strip=True)
-                    url = link_tag['href']
-                    if title and url and len(title) > 10 and len(title) < 200:
-                        news_items.append({'title': title, 'url': url})
-            
-            # パターン2: article タグ
-            if len(news_items) < 5:
-                articles_tags = soup.find_all('article', limit=limit*2)
-                for article in articles_tags:
-                    link_tag = article.find('a', href=True)
-                    if link_tag:
-                        # タイトルをarticle内から探す
-                        title_tag = article.find(['h2', 'h3', 'h4', 'span'], class_=['title', 'heading'])
-                        if not title_tag:
-                            title_tag = article.find(['h2', 'h3', 'h4'])
-                        
-                        title = link_tag.get_text(strip=True) if not title_tag else title_tag.get_text(strip=True)
-                        
-                        if title and len(title) > 10 and len(title) < 200:
-                            news_items.append({
-                                'title': title,
-                                'url': link_tag['href']
-                            })
-            
-            # パターン3: すべてのリンクから /news/ を含むものを抽出
-            if len(news_items) < 5:
-                all_links = soup.find_all('a', href=True, limit=limit*5)
-                for link in all_links:
-                    url = link.get('href', '')
-                    if '/news/' in url or '/news-room/' in url:
-                        title = link.get_text(strip=True)
-                        if title and len(title) > 15 and len(title) < 200:
-                            news_items.append({'title': title, 'url': url})
-            
-            logger.debug(f"WHO: {len(news_items)} 個の候補を発見")
-            
-            # 取得した記事をNewsArticleオブジェクトに変換
-            for item in news_items[:limit]:
-                url = item['url']
-                # 相対URLを絶対URLに変換
-                if url.startswith('/'):
-                    url = f"https://www.who.int{url}"
-                elif not url.startswith('http'):
-                    url = f"https://www.who.int/{url}"
-                
+
+            data = response.json()
+            items = data.get("value", [])
+
+            for item in items:
+                title = item.get("Title", "").strip()
+                url_path = item.get("ItemDefaultUrl", "")
+                published = item.get("PublicationDate", None)
+
+                if not title or not url_path:
+                    continue
+
+                # 相対パスを絶対URLに変換
+                if url_path.startswith("/"):
+                    url = f"https://www.who.int{url_path}"
+                else:
+                    url = url_path
+
                 article = NewsArticle(
-                    title=item['title'],
+                    title=title,
                     url=url,
-                    source="WHO"
+                    source="WHO",
+                    published_date=published
                 )
                 articles.append(article)
-            
-            logger.info(f"✅ WHO (スクレイピング): {len(articles)} 件の記事を取得")
-            
+
+            logger.info(f"✅ WHO (JSON API): {len(articles)} 件の記事を取得")
+
         except requests.exceptions.RequestException as e:
             logger.error(f"❌ WHO ニュース取得エラー (ネットワーク): {e}")
         except Exception as e:
             logger.error(f"❌ WHO ニュース取得エラー: {e}")
             import traceback
             traceback.print_exc()
-        
+
         return articles
 
     def collect_all(self, limit_per_source: int = 20) -> List[NewsArticle]:
@@ -367,7 +606,32 @@ class NewsCollector:
         mhlw_articles = self.fetch_mhlw_rss(limit=limit_per_source)
         all_articles.extend(mhlw_articles)
         time.sleep(1)  # 礼儀正しく待機
-        
+
+        # 財務省
+        mof_articles = self.fetch_mof_rss(limit=limit_per_source)
+        all_articles.extend(mof_articles)
+        time.sleep(1)
+
+        # 内閣府
+        cao_articles = self.fetch_cao_rss(limit=limit_per_source)
+        all_articles.extend(cao_articles)
+        time.sleep(1)
+
+        # World Bank (Health)
+        wb_articles = self.fetch_worldbank_health_news(limit=limit_per_source)
+        all_articles.extend(wb_articles)
+        time.sleep(1)
+
+        # UN News (Health)
+        un_articles = self.fetch_un_news_health_rss(limit=limit_per_source)
+        all_articles.extend(un_articles)
+        time.sleep(1)
+
+        # FIP
+        fip_articles = self.fetch_fip_news(limit=limit_per_source)
+        all_articles.extend(fip_articles)
+        time.sleep(1)
+
         # HGPI
         hgpi_articles = self.fetch_hgpi_news(limit=limit_per_source)
         all_articles.extend(hgpi_articles)
