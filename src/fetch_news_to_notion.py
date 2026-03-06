@@ -331,8 +331,13 @@ class NewsCollector:
             if feed.bozo:
                 logger.warning(f"UN News RSS解析エラー: {feed.bozo_exception}")
 
-            for entry in feed.entries[:limit]:
-                title = entry.get('title', 'タイトルなし')
+            for entry in feed.entries:
+                if len(articles) >= limit:
+                    break
+                title = entry.get('title', '')
+                # "World News in Brief" は複数トピック混在の記事のため除外
+                if not title or title.startswith('World News in Brief'):
+                    continue
                 # guid (perma link) が本来のURL、link はfeed viewer経由のURLのため guid を優先
                 link = entry.get('id', entry.get('link', ''))
                 published = entry.get('published', None)
@@ -357,8 +362,9 @@ class NewsCollector:
         """
         FIP (International Pharmaceutical Federation) のプレスリリースページから最新記事を取得
 
-        HTMLが静的レンダリングのためBeautifulSoupでスクレイピング可能。
-        ページ構造: 各<a>タグに「タイトル More 場所 • 日付」が一体で格納されている。
+        ページ構造:
+        - フィーチャー記事: <article> 内の <h2> にタイトル、<a> には "More" のみ
+        - アーカイブリスト: <a> に「タイトル More 場所 • 日付」が一体で格納
 
         Args:
             limit: 取得する記事の最大数
@@ -370,33 +376,38 @@ class NewsCollector:
         logger.info("FIP プレスリリースを取得中...")
         articles = []
 
+        def normalize_href(href: str) -> str:
+            if href.startswith('./'):
+                return 'https://www.fip.org/' + href[2:]
+            elif href.startswith('/'):
+                return 'https://www.fip.org' + href
+            return href
+
         try:
             url = "https://www.fip.org/press-releases"
             response = requests.get(url, headers=HEADERS, timeout=30)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # フィーチャー記事（article タグ）を取得
+            # フィーチャー記事: タイトルは <article> 内の <h2>、URLは "More" リンクから取得
             featured = soup.find('article')
             if featured:
+                h2 = featured.find('h2')
                 a_tag = featured.find('a', href=True)
-                if a_tag and 'press-item' in a_tag.get('href', ''):
-                    raw = a_tag.get_text(separator=' ', strip=True)
-                    title = re.split(r'\s+More\s+', raw)[0].strip()
-                    href = a_tag['href']
-                    if href.startswith('./'):
-                        href = 'https://www.fip.org/' + href[2:]
-                    date_match = re.search(r'\d+\s+\w+\s+\d{4}', raw)
-                    published = date_match.group(0) if date_match else None
+                if h2 and a_tag and 'press-item' in a_tag.get('href', ''):
+                    title = h2.get_text(strip=True)
+                    href = normalize_href(a_tag['href'])
                     if title:
                         articles.append(NewsArticle(
-                            title=title, url=href, source="FIP", published_date=published
+                            title=title, url=href, source="FIP", published_date=None
                         ))
 
-            # アーカイブリスト（タイトルテキスト付きの press-item リンク）
+            # アーカイブリスト: テキストが "More" のみ、または "More•日付" のリンクは除外
             links = [
                 a for a in soup.find_all('a', href=True)
-                if 'press-item' in a.get('href', '') and a.get_text(strip=True) != 'More'
+                if 'press-item' in a.get('href', '')
+                and not re.match(r'^More[\s•]', a.get_text(strip=True))
+                and a.get_text(strip=True) != 'More'
             ]
 
             for a_tag in links:
@@ -407,12 +418,7 @@ class NewsCollector:
                 parts = re.split(r'\s+More\s+', raw, maxsplit=1)
                 title = parts[0].strip()
 
-                href = a_tag['href']
-                if href.startswith('./'):
-                    href = 'https://www.fip.org/' + href[2:]
-                elif href.startswith('/'):
-                    href = 'https://www.fip.org' + href
-
+                href = normalize_href(a_tag['href'])
                 date_match = re.search(r'\d+\s+\w+\s+\d{4}', raw)
                 published = date_match.group(0) if date_match else None
 
@@ -434,94 +440,63 @@ class NewsCollector:
 
     def fetch_hgpi_news(self, limit: int = 20) -> List[NewsArticle]:
         """
-        日本医療政策機構(HGPI)のニュースページから最新記事を取得
+        日本医療政策機構(HGPI)の各セクションページから最新記事を取得
+
+        news / research / events / lecture の4セクションを対象とする。
 
         Args:
-            limit: 取得する記事の最大数
+            limit: 各セクションから取得する記事の最大数
 
         Returns:
             NewsArticleのリスト
         """
         logger.info("日本医療政策機構 (HGPI) ニュースを取得中...")
         articles = []
-        
-        try:
-            news_url = "https://hgpi.org/news/"
-            response = requests.get(news_url, headers=HEADERS, timeout=30)
-            response.raise_for_status()
-            response.encoding = response.apparent_encoding
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # ニュース記事のリンクを探す
-            news_items = []
-            
-            # パターン1: リスト内のh2/h3リンク（最も一般的）
-            headings = soup.find_all(['h2', 'h3', 'h4'], limit=limit*3)
-            for heading in headings:
-                link_tag = heading.find('a', href=True)
-                if link_tag:
-                    title = heading.get_text(strip=True)
-                    url = link_tag['href']
-                    if title and url and len(title) > 5:
-                        news_items.append({'title': title, 'url': url})
-            
-            # パターン2: article タグ内のリンク
-            if len(news_items) < 5:
-                articles_tags = soup.find_all('article', limit=limit*2)
-                for article in articles_tags:
-                    link_tag = article.find('a', href=True)
-                    if link_tag:
-                        title = link_tag.get_text(strip=True)
-                        # タイトルが短すぎるなら、h2/h3を探す
-                        if len(title) < 10:
-                            title_tag = article.find(['h2', 'h3', 'h4'])
-                            if title_tag:
-                                title = title_tag.get_text(strip=True)
-                        
-                        if title and len(title) > 5:
-                            news_items.append({
-                                'title': title,
-                                'url': link_tag['href']
-                            })
-            
-            # パターン3: すべてのリンクから /news/ または /post/ を含むものを抽出
-            if len(news_items) < 5:
-                all_links = soup.find_all('a', href=True, limit=limit*5)
-                for link in all_links:
-                    url = link.get('href', '')
-                    if '/news/' in url or '/post/' in url or '/research/' in url:
-                        title = link.get_text(strip=True)
-                        if title and len(title) > 10 and len(title) < 200:
-                            news_items.append({'title': title, 'url': url})
-            
-            logger.debug(f"HGPI: {len(news_items)} 個の候補を発見")
-            
-            # 取得した記事をNewsArticleオブジェクトに変換
-            for item in news_items[:limit]:
-                url = item['url']
-                # 相対URLを絶対URLに変換
-                if url.startswith('/'):
-                    url = f"https://hgpi.org{url}"
-                elif not url.startswith('http'):
-                    url = f"https://hgpi.org/{url}"
-                
-                article = NewsArticle(
-                    title=item['title'],
-                    url=url,
-                    source="HGPI"
-                )
-                articles.append(article)
-            
-            logger.info(f"✅ HGPI: {len(articles)} 件の記事を取得")
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"❌ HGPI ニュース取得エラー (ネットワーク): {e}")
-        except Exception as e:
-            logger.error(f"❌ HGPI ニュース取得エラー: {e}")
-            import traceback
-            traceback.print_exc()
-        
+        seen_urls = set()
+
+        sections = ["/news/", "/research/", "/events/", "/lecture/"]
+
+        for section in sections:
+            try:
+                section_url = f"https://hgpi.org{section}"
+                response = requests.get(section_url, headers=HEADERS, timeout=30)
+                response.raise_for_status()
+                response.encoding = response.apparent_encoding
+                soup = BeautifulSoup(response.text, 'html.parser')
+
+                count = 0
+                for a_tag in soup.find_all('a', href=True):
+                    href = a_tag['href']
+                    # セクションパスを含む絶対・相対URLのみ対象
+                    if section not in href:
+                        continue
+                    # 絶対URLに変換
+                    if href.startswith('http'):
+                        url = href
+                    elif href.startswith('/'):
+                        url = f"https://hgpi.org{href}"
+                    else:
+                        continue
+
+                    title = a_tag.get_text(strip=True)
+                    if not title or len(title) < 10 or url in seen_urls:
+                        continue
+
+                    seen_urls.add(url)
+                    articles.append(NewsArticle(title=title, url=url, source="HGPI"))
+                    count += 1
+                    if count >= limit:
+                        break
+
+                logger.debug(f"HGPI {section}: {count} 件取得")
+                time.sleep(1)
+
+            except requests.exceptions.RequestException as e:
+                logger.error(f"❌ HGPI {section} 取得エラー (ネットワーク): {e}")
+            except Exception as e:
+                logger.error(f"❌ HGPI {section} 取得エラー: {e}")
+
+        logger.info(f"✅ HGPI: {len(articles)} 件の記事を取得")
         return articles
 
     def fetch_who_news(self, limit: int = 20) -> List[NewsArticle]:
