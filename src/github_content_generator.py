@@ -637,18 +637,24 @@ def scrape_article(url: str) -> dict:
     resp.encoding = resp.apparent_encoding
 
     soup = BeautifulSoup(resp.text, "lxml")
-    for el in soup(["script", "style", "nav", "footer", "header", "aside"]):
-        el.decompose()
 
     title_el = soup.find("title") or soup.find("h1") or soup.find("h2")
     title_text = title_el.get_text(strip=True) if title_el else "タイトルなし"
 
-    candidates = (
-        soup.find_all("article")
-        or soup.find_all("div", class_=["article", "content", "post", "entry"])
-        or soup.find_all("main")
-        or [soup.find("body")]
-    )
+    # div.entry-content はサイトによっては <header> 内に配置されるため、
+    # タグ除去の前に優先検索する
+    entry_content = soup.find("div", class_="entry-content")
+    if entry_content:
+        candidates = [entry_content]
+    else:
+        for el in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            el.decompose()
+        candidates = (
+            soup.find_all("article")
+            or soup.find_all("div", class_=["article", "content", "post", "entry"])
+            or soup.find_all("main")
+            or [soup.find("body")]
+        )
     parts: list[str] = []
     for el in candidates:
         if not el:
@@ -659,6 +665,42 @@ def scrape_article(url: str) -> dict:
                 parts.append(t)
 
     content = "\n\n".join(parts)
+
+    # JSレンダリングSPAページ対策: 本文が短い場合は og:description にフォールバック
+    if len(content) < 100:
+        og_desc = (
+            soup.find("meta", property="og:description")
+            or soup.find("meta", attrs={"name": "description"})
+        )
+        if og_desc:
+            fallback = og_desc.get("content", "").strip()
+            if len(fallback) >= 50:
+                content = fallback
+                logger.info(f"  本文スクレイピング失敗のため og:description を使用: {url}")
+
+    # ナビゲーション/SPA シェルコンテンツの検知
+    # 本文がサイトナビゲーションの場合は Jina AI Reader にフォールバック
+    NAV_MARKERS = ["About FIP", "Who we are", "Our vision"]
+    if any(content.startswith(marker) for marker in NAV_MARKERS) or len(content) < 100:
+        try:
+            jina_url = f"https://r.jina.ai/{url}"
+            jina_resp = requests.get(jina_url, headers=headers, timeout=30)
+            jina_resp.raise_for_status()
+            jina_text = jina_resp.text
+            if len(jina_text) >= 100:
+                content = jina_text
+                logger.info(f"  Jina AI Reader にフォールバック ({len(content)}文字): {url}")
+            else:
+                raise ValueError("Jina AI でも本文が取得できませんでした")
+        except requests.exceptions.HTTPError as jina_err:
+            raise ValueError(
+                f"記事本文が取得できませんでした（サイトがスクレイピングをブロック）: {url}"
+            )
+        except Exception as jina_err:
+            raise ValueError(
+                f"記事本文が取得できませんでした: {jina_err}"
+            )
+
     if len(content) < 100:
         raise ValueError("記事本文が短すぎます（スクレイピング失敗の可能性）")
 
