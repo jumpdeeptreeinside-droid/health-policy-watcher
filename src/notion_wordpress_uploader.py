@@ -21,8 +21,11 @@ import re
 import logging
 import requests
 import markdown as markdown_lib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional
+
+# JST タイムゾーン
+_JST = timezone(timedelta(hours=9))
 
 # ──────────────────────────────────────────────
 # Windows 環境での文字エンコーディング対応
@@ -521,10 +524,18 @@ class NotionWordPressUploader:
             pass
         return None
 
-    def upload_to_wordpress(self, title: str, html_content: str) -> Optional[int]:
+    def upload_to_wordpress(
+        self, title: str, html_content: str, scheduled_time_utc: Optional[str] = None
+    ) -> Optional[int]:
         """
-        WordPress に下書きとして投稿し、投稿 ID を返す。
-        同タイトルの投稿が既に存在する場合はスキップする。
+        WordPress に投稿し、投稿 ID を返す。
+        scheduled_time_utc が指定された場合は予約投稿（status=future）、
+        未指定の場合は下書き（status=draft）として保存する。
+
+        Args:
+            title:               投稿タイトル
+            html_content:        投稿本文（HTML）
+            scheduled_time_utc:  公開予定日時（UTC, ISO8601 形式 "YYYY-MM-DDTHH:MM:SS"）
         """
         if not self.wp_api_url:
             logger.error("  WordPress API URL が未設定です")
@@ -539,11 +550,19 @@ class NotionWordPressUploader:
             )
             return existing_id
 
-        post_data: Dict = {
-            'title':   title,
-            'content': html_content,
-            'status':  'draft',
-        }
+        if scheduled_time_utc:
+            post_data: Dict = {
+                'title':    title,
+                'content':  html_content,
+                'status':   'future',
+                'date_gmt': scheduled_time_utc,
+            }
+        else:
+            post_data = {
+                'title':   title,
+                'content': html_content,
+                'status':  'draft',
+            }
         if DEFAULT_CATEGORY_ID:
             post_data['categories'] = [DEFAULT_CATEGORY_ID]
         if DEFAULT_TAGS:
@@ -582,6 +601,20 @@ class NotionWordPressUploader:
         except Exception as e:
             logger.error(f"  ❌ 予期しないエラー: {e}")
             return None
+
+    def _next_schedule_jst(self) -> str:
+        """
+        公開予定時刻を決定して UTC ISO8601 文字列（WordPress date_gmt 用）で返す。
+
+        ルール:
+          - JST 18:00 より前に実行 → 当日 18:00 に公開
+          - JST 18:00 以降に実行   → 翌日  6:00 に公開
+        """
+        now_jst   = datetime.now(_JST)
+        today_18  = now_jst.replace(hour=18, minute=0, second=0, microsecond=0)
+        tomorrow_6 = (now_jst + timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
+        target = today_18 if now_jst < today_18 else tomorrow_6
+        return target.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
 
     def _markdown_to_html(self, md_content: str) -> str:
         """Markdown 文字列を HTML に変換する"""
@@ -625,6 +658,16 @@ class NotionWordPressUploader:
             )
             return 0
         logger.info(f"WordPress API URL: {self.wp_api_url}")
+
+        # 次の JST 18:00 に予約投稿するための UTC 時刻を計算
+        scheduled_time_utc = self._next_schedule_jst()
+        scheduled_time_jst = (
+            datetime.strptime(scheduled_time_utc, '%Y-%m-%dT%H:%M:%S')
+            .replace(tzinfo=timezone.utc)
+            .astimezone(_JST)
+            .strftime('%Y-%m-%d %H:%M JST')
+        )
+        logger.info(f"予約公開時刻: {scheduled_time_jst} (UTC: {scheduled_time_utc})")
 
         success_count = 0
 
@@ -675,15 +718,15 @@ class NotionWordPressUploader:
                 logger.error("  ❌ スキップ: HTML 変換後のコンテンツが空です")
                 continue
 
-            # ── WordPress に下書き投稿
-            logger.info("  WordPress に投稿中...")
-            post_id = self.upload_to_wordpress(title, html_content)
+            # ── WordPress に予約投稿
+            logger.info(f"  WordPress に投稿中（予約: {scheduled_time_jst}）...")
+            post_id = self.upload_to_wordpress(title, html_content, scheduled_time_utc)
 
             if post_id:
-                # ── Notion ステータスを「スケジュール待ち」に更新
-                if self.update_notion_status(page_id, "スケジュール待ち"):
+                # ── Notion ステータスを「スケジュール済み」に更新
+                if self.update_notion_status(page_id, "スケジュール済み"):
                     logger.info(
-                        "  ✅ Notion ステータス更新: 投稿待ち → スケジュール待ち"
+                        f"  ✅ Notion ステータス更新: 投稿待ち → スケジュール済み"
                     )
                 else:
                     logger.warning(

@@ -1,0 +1,56 @@
+name: WordPress 自動投稿 (Health Policy Watcher)
+
+on:
+  # コンテンツ生成（8:30 / 13:30 / 18:30）の直後に実行
+  # UTC = JST - 9
+  schedule:
+    - cron: '0 0 * * *'    # JST  9:00 → 当日 18:00 に公開
+    - cron: '0 5 * * *'    # JST 14:00 → 当日 18:00 に公開
+    - cron: '30 10 * * *'  # JST 19:30 → 翌日  6:00 に公開
+
+  # GitHub Actions 画面から手動実行も可能
+  workflow_dispatch:
+
+jobs:
+  upload-to-wordpress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── 1. リポジトリをチェックアウト ──────────────────────
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      # ── 2. Python 環境のセットアップ ───────────────────────
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. 依存パッケージのインストール ────────────────────
+      - name: 依存パッケージをインストール
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 4. WordPress アップロードスクリプトを実行 ───────────
+      - name: Notion → WordPress 自動投稿を実行
+        env:
+          NOTION_API_KEY:        ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID:    ${{ secrets.NOTION_DATABASE_ID }}
+          WORDPRESS_URL:         ${{ secrets.WORDPRESS_URL }}
+          WORDPRESS_USERNAME:    ${{ secrets.WORDPRESS_USERNAME }}
+          WORDPRESS_APP_PASSWORD: ${{ secrets.WORDPRESS_APP_PASSWORD }}
+        run: |
+          python src/notion_wordpress_uploader.py
+
+      # ── 5. ログをアーティファクトとして保存（失敗時）──────
+      - name: ログをアップロード（失敗時のみ）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wordpress-uploader-error-log-${{ github.run_id }}
+          path: |
+            *.log
+          retention-days: 7
