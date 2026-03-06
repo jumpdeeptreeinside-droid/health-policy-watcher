@@ -724,9 +724,9 @@ class NotionWordPressUploader:
 
             if post_id:
                 # ── Notion ステータスを「スケジュール済み」に更新
-                if self.update_notion_status(page_id, "スケジュール済み"):
+                if self.update_notion_status(page_id, "完了"):
                     logger.info(
-                        f"  ✅ Notion ステータス更新: 投稿待ち → スケジュール済み"
+                        f"  ✅ Notion ステータス更新: 投稿待ち → 完了"
                     )
                 else:
                     logger.warning(
