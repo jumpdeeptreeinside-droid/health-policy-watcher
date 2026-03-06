@@ -286,6 +286,44 @@ PROMPT_SCRIPT = """
 上記のルールに厳密に従って、Podcast台本を作成してください。
 """
 
+# Podcast台本 → ファクトチェックプロンプト
+PROMPT_FACTCHECK = """
+# タスク
+以下の「元記事（スクレイピングまたはPDF原文）」と「生成されたブログ記事」を比較し、
+ファクトチェックレポートを日本語で作成してください。
+
+## チェック項目
+
+1. **数字・日付の照合**: 元記事の数字・パーセンテージ・日付がブログ記事で正確に使われているか
+2. **固有名詞の照合**: 人名・組織名・地名・法律名等が正確か
+3. **ハルシネーション検出**: ブログ記事に元記事にない情報が含まれていないか
+4. **ニュアンスの変化**: 意味が変わっている・誇張されている箇所がないか
+
+## 出力フォーマット（必ずこの形式で出力）
+
+### 総合評価
+[問題なし / 軽微な問題あり / 要修正] と、1〜2文の理由
+
+### 確認済み（正確）
+元記事と一致している重要な数字・固有名詞を箇条書きで列挙
+
+### 要確認・修正箇所
+問題がある場合のみ以下の表を出力。なければ「なし」と記載。
+
+| 項目 | 元記事 | ブログ記事 | 判定 |
+|------|--------|-----------|------|
+
+判定は「⚠️ 要確認」または「❌ 要修正」を使用。
+
+### コメント
+その他、気になる点があれば記載。なければ省略。
+
+# ルール
+- 前置きや挨拶は不要
+- 問題がない場合は「問題なし」と明記
+- マークダウン形式で出力
+"""
+
 # ──────────────────────────────────────────────
 # Markdown → Notion ブロック変換
 # ──────────────────────────────────────────────
@@ -711,7 +749,7 @@ def scrape_article(url: str) -> dict:
 # ──────────────────────────────────────────────
 def generate_from_pdfs(
     pdf_paths: list[str],
-) -> tuple[Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """PDF ファイル群からブログ記事と台本を生成して (blog, script) を返す"""
     client = _gemini_client
     uploaded: list = []
@@ -741,7 +779,7 @@ def generate_from_pdfs(
 
     if not uploaded:
         logger.error("  有効な PDF がアップロードできませんでした")
-        return None, None
+        return None, None, None
 
     pdf_name_list = "\n".join(f"- {os.path.basename(p)}" for p in pdf_paths)
     prompt_pdf = (
@@ -772,9 +810,25 @@ def generate_from_pdfs(
         script_content = script_resp.text.strip()
         logger.info(f"  Podcast 台本生成完了 ({len(script_content)} 文字)")
 
+        time.sleep(2)
+
+        logger.info("  [第3段階] ファクトチェックを実行中...")
+        factcheck_prompt = (
+            f"{PROMPT_FACTCHECK}\n\n"
+            f"# 元記事（PDF原文）\n（添付PDFを参照）\n\n"
+            f"# 生成されたブログ記事\n{blog_content}"
+        )
+        factcheck_resp = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=uploaded + [factcheck_prompt],
+            config=genai_types.GenerateContentConfig(temperature=0.2),
+        )
+        factcheck_content = factcheck_resp.text.strip()
+        logger.info(f"  ファクトチェック完了 ({len(factcheck_content)} 文字)")
+
     except Exception as e:
         logger.error(f"  Gemini 生成エラー: {e}")
-        return None, None
+        return None, None, None
     finally:
         for uf in uploaded:
             try:
@@ -782,11 +836,11 @@ def generate_from_pdfs(
             except Exception:
                 pass
 
-    return blog_content, script_content
+    return blog_content, script_content, factcheck_content
 
 
-def generate_from_url(url: str) -> tuple[Optional[str], Optional[str]]:
-    """URL をスクレイピングしてブログ記事と台本を生成して (blog, script) を返す"""
+def generate_from_url(url: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """URL をスクレイピングしてブログ記事・台本・ファクトチェックを生成して (blog, script, factcheck) を返す"""
     client = _gemini_client
 
     logger.info(f"  スクレイピング中: {url}")
@@ -795,7 +849,7 @@ def generate_from_url(url: str) -> tuple[Optional[str], Optional[str]]:
         logger.info(f"  スクレイピング完了: {article['title'][:60]} ({len(article['content'])} 文字)")
     except Exception as e:
         logger.error(f"  スクレイピングエラー: {e}")
-        return None, None
+        return None, None, None
 
     article_text = (
         f"URL: {article['url']}\n"
@@ -824,11 +878,27 @@ def generate_from_url(url: str) -> tuple[Optional[str], Optional[str]]:
         script_content = script_resp.text.strip()
         logger.info(f"  Podcast 台本生成完了 ({len(script_content)} 文字)")
 
+        time.sleep(2)
+
+        logger.info("  [第3段階] ファクトチェックを実行中...")
+        factcheck_prompt = (
+            f"{PROMPT_FACTCHECK}\n\n"
+            f"# 元記事\n{article_text}\n\n"
+            f"# 生成されたブログ記事\n{blog_content}"
+        )
+        factcheck_resp = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[factcheck_prompt],
+            config=genai_types.GenerateContentConfig(temperature=0.2),
+        )
+        factcheck_content = factcheck_resp.text.strip()
+        logger.info(f"  ファクトチェック完了 ({len(factcheck_content)} 文字)")
+
     except Exception as e:
         logger.error(f"  Gemini 生成エラー: {e}")
-        return None, None
+        return None, None, None
 
-    return blog_content, script_content
+    return blog_content, script_content, factcheck_content
 
 # ──────────────────────────────────────────────
 # コンテンツを Notion の子ページとして保存
@@ -839,6 +909,7 @@ def save_to_notion(
     source_url: str,
     blog_content: str,
     script_content: str,
+    factcheck_content: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """
     ブログ記事・台本を Notion の子ページとして保存し、
@@ -853,6 +924,13 @@ def save_to_notion(
     #   [temp id=3]
     #   （本文）
     #   [temp id=2]
+    factcheck_blocks: list[dict] = []
+    if factcheck_content:
+        factcheck_blocks = [
+            {"object": "block", "type": "divider", "divider": {}},
+            _block("heading_2", [_make_rich_text("ファクトチェックレポート")]),
+        ] + markdown_to_notion_blocks(factcheck_content)
+
     blog_blocks: list[dict] = [
         # 引用元
         _block("quote", [
@@ -868,7 +946,7 @@ def save_to_notion(
     ] + markdown_to_notion_blocks(blog_body) + [
         # テンプレートタグ（末尾）
         _block("paragraph", [_make_rich_text("[temp id=2]")]),
-    ]
+    ] + factcheck_blocks
 
     logger.info(f"  ブログ記事ページを作成中: {blog_title[:50]}")
     blog_page_id = notion.create_child_page(parent_page_id, blog_title, blog_blocks)
@@ -927,7 +1005,7 @@ def process_pdf_pages(notion: NotionAPI) -> int:
                 continue
             logger.info(f"  {len(pdf_paths)} 件の PDF をダウンロード完了")
 
-            blog, script = generate_from_pdfs(pdf_paths)
+            blog, script, factcheck = generate_from_pdfs(pdf_paths)
         # tmpdir はここで自動削除される
 
         if not blog or not script:
@@ -935,7 +1013,7 @@ def process_pdf_pages(notion: NotionAPI) -> int:
             continue
 
         blog_pid, script_pid = save_to_notion(
-            notion, page_id, source_url, blog, script
+            notion, page_id, source_url, blog, script, factcheck
         )
         logger.info(f"  blog_page_id:   {blog_pid}")
         logger.info(f"  script_page_id: {script_pid}")
@@ -976,14 +1054,14 @@ def process_url_pages(notion: NotionAPI) -> int:
             logger.warning("  URL(Source) が空のためスキップ")
             continue
 
-        blog, script = generate_from_url(source_url)
+        blog, script, factcheck = generate_from_url(source_url)
 
         if not blog or not script:
             logger.error("  コンテンツ生成失敗 - スキップ")
             continue
 
         blog_pid, script_pid = save_to_notion(
-            notion, page_id, source_url, blog, script
+            notion, page_id, source_url, blog, script, factcheck
         )
         logger.info(f"  blog_page_id:   {blog_pid}")
         logger.info(f"  script_page_id: {script_pid}")
