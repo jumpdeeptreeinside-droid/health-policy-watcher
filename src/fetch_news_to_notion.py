@@ -528,10 +528,8 @@ class NewsCollector:
         """
         WHO (World Health Organization) の公式JSON APIから最新記事を取得
 
-        WHOのニュースページはJavaScriptで動的レンダリングされるため、
-        requests によるスクレイピングでは "Loading..." しか取得できない。
-        旧RSSフィード (feeds/entity/mediacentre/news/en/rss.xml) も廃止済み。
-        代わりに公式のREST APIエンドポイントを使用する。
+        WHOのニュースページはKendo UIによるSPAのためHTMLに記事データが含まれていない。
+        内部のOData APIエンドポイント (/api/hubs/newsitems) から直接JSONを取得する。
 
         Args:
             limit: 取得する記事の最大数
@@ -544,28 +542,42 @@ class NewsCollector:
 
         try:
             api_url = (
-                "https://www.who.int/api/news/articles"
-                f"?sf_culture=en&$top={limit}&$orderby=PublicationDate+desc"
+                "https://www.who.int/api/hubs/newsitems"
+                "?sf_site=15210d59-ad60-47ff-a542-7ed76645f0c7"
+                "&sf_provider=OpenAccessDataProvider"
+                "&sf_culture=en"
+                "&$orderby=PublicationDateAndTime%20desc"
+                "&$select=Title,ItemDefaultUrl,FormatedDate,PublicationDateAndTime"
+                f"&$top={limit}"
             )
-            response = requests.get(api_url, headers=HEADERS, timeout=30)
+            who_headers = {
+                **HEADERS,
+                "Accept": "application/json",
+                "Referer": "https://www.who.int/news",
+            }
+            response = requests.get(api_url, headers=who_headers, timeout=30)
             response.raise_for_status()
 
             data = response.json()
-            items = data.get("value", [])
+            raw_items = data.get("value", data) if isinstance(data, dict) else data
 
-            for item in items:
+            for item in raw_items:
                 title = item.get("Title", "").strip()
-                url_path = item.get("ItemDefaultUrl", "")
-                published = item.get("PublicationDate", None)
+                relative_url = item.get("ItemDefaultUrl", "")
+                published = item.get("FormatedDate") or item.get("PublicationDateAndTime", None)
 
-                if not title or not url_path:
+                if not title or not relative_url:
                     continue
 
                 # 相対パスを絶対URLに変換
-                if url_path.startswith("/"):
-                    url = f"https://www.who.int{url_path}"
+                # APIが返す ItemDefaultUrl は "/DD-MM-YYYY-slug" 形式のため
+                # 正しいページURLである "/news/item/DD-MM-YYYY-slug" に補正する
+                if relative_url.startswith("http"):
+                    url = relative_url
+                elif relative_url.startswith("/news/"):
+                    url = "https://www.who.int" + relative_url
                 else:
-                    url = url_path
+                    url = "https://www.who.int/news/item" + relative_url
 
                 article = NewsArticle(
                     title=title,
