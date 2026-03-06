@@ -1,13 +1,12 @@
 name: コンテンツ自動生成 (Health Policy Watcher)
 
 on:
-  # 毎日 日本時間 約10:30 / 約19:30 に実行
-  # GitHub Actionsの遅延(最大1〜2時間)を考慮して早めに設定
-  # UTC 23:30 = JST 8:30 → 遅延込みで約JST 10:30
-  # UTC 8:30  = JST 17:30 → 遅延込みで約JST 19:30
+  # 毎日 日本時間 8:30 / 13:30 / 18:30 に実行（3回）
+  # UTC = JST - 9
   schedule:
-    - cron: '30 23 * * *'
-    - cron: '30 8 * * *'
+    - cron: '30 23 * * *'   # JST 8:30
+    - cron: '30 4 * * *'    # JST 13:30
+    - cron: '30 9 * * *'    # JST 18:30
 
   # GitHub Actions 画面から手動実行も可能
   workflow_dispatch:
