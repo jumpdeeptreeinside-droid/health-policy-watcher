@@ -914,6 +914,20 @@ def main() -> None:
     report_page_title = f"【Vol.{vol_number}】{decided_title}（{issue_date}号）"
     _, report_body    = extract_title_from_markdown(report_content)
     report_blocks     = markdown_to_notion_blocks(report_body)
+
+    # ── 末尾に固定セクションを追加 ────────────
+    report_blocks += [
+        {"object": "block", "type": "divider", "divider": {}},
+        _block("heading_2", [_make_rich_text("今週の医療・保健政策ニュース全リスト")]),
+        _block("bulleted_list_item", [_make_rich_text("「要点解説まではいかないけれど、タイトルだけは知っておきたい」", bold=True)]),
+        _block("bulleted_list_item", [_make_rich_text("そんな方のために、私が今週チェックした国内外の政策ニュースをリスト化しました。")]),
+        _block("bulleted_list_item", [_make_rich_text("気になったものがあれば、Podcastをチェックしてみてください。")]),
+        _block("heading_3", [_make_rich_text("▼国内医療政策")]),
+        _block("heading_3", [_make_rich_text("▼海外保健政策")]),
+        {"object": "block", "type": "divider", "divider": {}},
+        _block("heading_2", [_make_rich_text("メンバーシップ限定")]),
+    ]
+
     report_page_id    = notion.create_child_page(
         WEEKLY_REPORT_PARENT_PAGE_ID, report_page_title, report_blocks
     )
