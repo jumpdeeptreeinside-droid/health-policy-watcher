@@ -114,6 +114,13 @@ NOTION_API_KEY, NOTION_DATABASE_ID, GEMINI_API_KEY, GEMINI_MODEL, \
 NOTIFY_TO = "jump.deep.tree.inside@gmail.com"
 
 
+def extract_notion_page_id(url_or_id: str) -> Optional[str]:
+    """Notion URL または page_id 文字列から 32桁の UUID を抽出して返す"""
+    clean = url_or_id.replace("-", "")
+    m = re.search(r"([0-9a-f]{32})", clean, re.IGNORECASE)
+    return m.group(1) if m else None
+
+
 # ──────────────────────────────────────────────
 # Gemini クライアント
 # ──────────────────────────────────────────────
@@ -261,6 +268,8 @@ PROMPT_WEEKLY_REPORT_TEMPLATE = """\
 
 ## 1本目: [記事タイトル]
 
+引用元: [URL(Source)をそのまま記載]
+
 ### 【事象の要約（What）】
 ...
 
@@ -270,7 +279,7 @@ PROMPT_WEEKLY_REPORT_TEMPLATE = """\
 ### 【戦略的アクション（Next Step）】
 ...
 
-（2本目以降も同様の構成）
+（2本目以降も同様の構成。必ず各記事の冒頭に「引用元:」行を入れること）
 
 ## タイトル候補
 
@@ -410,6 +419,26 @@ def markdown_to_notion_blocks(markdown_text: str) -> list[dict]:
             blocks.append(_block("bulleted_list_item", _parse_inline(stripped[2:])))
         elif re.match(r"^[-*_]{3,}$", stripped):
             blocks.append({"object": "block", "type": "divider", "divider": {}})
+        elif stripped.startswith("引用元:"):
+            # 「引用元: https://...」をクリッカブルリンクとして出力
+            url_match = re.search(r"https?://\S+", stripped)
+            if url_match:
+                link_url = url_match.group(0)
+                blocks.append({
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [
+                            _make_rich_text("引用元: "),
+                            {
+                                "type": "text",
+                                "text": {"content": link_url, "link": {"url": link_url}},
+                            },
+                        ]
+                    },
+                })
+            else:
+                blocks.append(_block("paragraph", _parse_inline(stripped)))
         else:
             blocks.append(_block("paragraph", _parse_inline(stripped)))
 
@@ -562,6 +591,45 @@ class NotionAPI:
             page_id,
             {"WeeklyReport?": {"status": {"name": status_name}}},
         )
+
+    def _get_all_blocks(self, page_id: str) -> list[dict]:
+        """ページの全ブロックをページネーションを考慮して取得"""
+        blocks: list[dict] = []
+        cursor: Optional[str] = None
+        while True:
+            params: dict = {"page_size": 100}
+            if cursor:
+                params["start_cursor"] = cursor
+            r = requests.get(
+                f"{self.BASE}/blocks/{page_id}/children",
+                headers=self.headers,
+                params=params,
+                timeout=30,
+            )
+            r.raise_for_status()
+            data = r.json()
+            blocks.extend(data.get("results", []))
+            if not data.get("has_more"):
+                break
+            cursor = data.get("next_cursor")
+        return blocks
+
+    def get_page_text(self, page_id: str) -> str:
+        """Notion ページのブロックをプレーンテキストとして取得"""
+        try:
+            blocks = self._get_all_blocks(page_id)
+            lines: list[str] = []
+            for b in blocks:
+                btype = b.get("type", "")
+                obj = b.get(btype, {})
+                rich_text = obj.get("rich_text", [])
+                text = "".join(rt.get("plain_text", "") for rt in rich_text)
+                if text:
+                    lines.append(text)
+            return "\n\n".join(lines)
+        except Exception as e:
+            logger.warning(f"  Notion ページ取得失敗 ({page_id[:8]}...): {e}")
+            return ""
 
 
 # ──────────────────────────────────────────────
@@ -779,23 +847,39 @@ def main() -> None:
     article_data: list[dict] = []
 
     for page in pages:
-        page_id    = page["id"]
-        title      = notion.get_property(page, "Title") or "タイトルなし"
-        source_url = notion.get_property(page, "URL(Source)") or ""
+        page_id         = page["id"]
+        title           = notion.get_property(page, "Title") or "タイトルなし"
+        source_url      = notion.get_property(page, "URL(Source)") or ""
+        article_web_url = notion.get_property(page, "Article(Web)") or ""
 
         logger.info(f"  処理中: {title[:60]}")
 
-        if not source_url:
-            logger.warning(f"  URL(Source) が空のためスキップ: {title[:40]}")
-            continue
+        content = ""
 
-        try:
-            art     = scrape_article(source_url)
-            content = art["content"][:30000]  # Gemini のコンテキスト制限に配慮
-            logger.info(f"  スクレイピング完了: {len(content)} 文字")
-        except Exception as e:
-            logger.warning(f"  スクレイピング失敗 ({source_url}): {e}")
-            content = f"（本文取得失敗。元URL: {source_url}）"
+        # ── 優先: Article(Web) の Notion 子ページから取得 ──
+        if article_web_url:
+            web_page_id = extract_notion_page_id(article_web_url)
+            if web_page_id:
+                content = notion.get_page_text(web_page_id)
+                if content:
+                    logger.info(f"  Article(Web) から取得: {len(content)} 文字")
+                else:
+                    logger.warning(f"  Article(Web) の内容が空でした")
+
+        # ── フォールバック: URL(Source) をスクレイピング ──
+        if not content:
+            if not source_url:
+                logger.warning(f"  Article(Web) も URL(Source) も空のためスキップ: {title[:40]}")
+                continue
+            try:
+                art     = scrape_article(source_url)
+                content = art["content"][:30000]
+                logger.info(f"  URL(Source) スクレイピング完了: {len(content)} 文字")
+            except Exception as e:
+                logger.warning(f"  スクレイピング失敗 ({source_url}): {e}")
+                content = f"（本文取得失敗。元URL: {source_url}）"
+
+        content = content[:30000]  # Gemini のコンテキスト制限に配慮
 
         article_data.append({
             "title":   title,
