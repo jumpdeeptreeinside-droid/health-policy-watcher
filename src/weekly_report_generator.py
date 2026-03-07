@@ -54,15 +54,17 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────
 # 設定読み込み（環境変数 → config.py の順に参照）
 # ──────────────────────────────────────────────
-def _load_config() -> tuple[str, str, str, str, str, str]:
+def _load_config() -> tuple[str, str, str, str, str, str, str]:
     """
     (NOTION_API_KEY, NOTION_DATABASE_ID, GEMINI_API_KEY,
-     GEMINI_MODEL, GMAIL_ADDRESS, GMAIL_APP_PASSWORD) を返す
+     GEMINI_MODEL, WEEKLY_REPORT_PARENT_PAGE_ID,
+     GMAIL_ADDRESS, GMAIL_APP_PASSWORD) を返す
     """
     notion_key    = os.environ.get("NOTION_API_KEY")
     notion_db     = os.environ.get("NOTION_DATABASE_ID")
     gemini_key    = os.environ.get("GEMINI_API_KEY")
     gemini_model  = os.environ.get("GEMINI_MODEL")
+    parent_page   = os.environ.get("WEEKLY_REPORT_PARENT_PAGE_ID")
     gmail_address = os.environ.get("GMAIL_ADDRESS")
     gmail_pass    = os.environ.get("GMAIL_APP_PASSWORD")
 
@@ -75,6 +77,8 @@ def _load_config() -> tuple[str, str, str, str, str, str]:
             gemini_key   = gemini_key  or cfg.GEMINI_API_KEY
             if not gemini_model:
                 gemini_model = getattr(cfg, "GEMINI_MODEL_NAME", None)
+            if not parent_page:
+                parent_page = getattr(cfg, "WEEKLY_REPORT_PARENT_PAGE_ID", None)
             if not gmail_address:
                 gmail_address = getattr(cfg, "GMAIL_ADDRESS", None)
             if not gmail_pass:
@@ -88,9 +92,10 @@ def _load_config() -> tuple[str, str, str, str, str, str]:
         gemini_model = "gemini-2.0-flash"
 
     missing = [k for k, v in {
-        "NOTION_API_KEY":     notion_key,
-        "NOTION_DATABASE_ID": notion_db,
-        "GEMINI_API_KEY":     gemini_key,
+        "NOTION_API_KEY":               notion_key,
+        "NOTION_DATABASE_ID":           notion_db,
+        "GEMINI_API_KEY":               gemini_key,
+        "WEEKLY_REPORT_PARENT_PAGE_ID": parent_page,
     }.items() if not v]
     if missing:
         logger.error(f"必須設定が不足: {', '.join(missing)}")
@@ -100,11 +105,11 @@ def _load_config() -> tuple[str, str, str, str, str, str]:
         logger.warning("GMAIL_ADDRESS / GMAIL_APP_PASSWORD が未設定です。メール送信はスキップされます。")
 
     logger.info(f"使用モデル: {gemini_model}")
-    return notion_key, notion_db, gemini_key, gemini_model, gmail_address or "", gmail_pass or ""
+    return notion_key, notion_db, gemini_key, gemini_model, parent_page, gmail_address or "", gmail_pass or ""
 
 
 NOTION_API_KEY, NOTION_DATABASE_ID, GEMINI_API_KEY, GEMINI_MODEL, \
-    GMAIL_ADDRESS, GMAIL_APP_PASSWORD = _load_config()
+    WEEKLY_REPORT_PARENT_PAGE_ID, GMAIL_ADDRESS, GMAIL_APP_PASSWORD = _load_config()
 
 NOTIFY_TO = "jump.deep.tree.inside@gmail.com"
 
@@ -826,7 +831,7 @@ def main() -> None:
     _, report_body    = extract_title_from_markdown(report_content)
     report_blocks     = markdown_to_notion_blocks(report_body)
     report_page_id    = notion.create_child_page(
-        NOTION_DATABASE_ID, report_page_title, report_blocks
+        WEEKLY_REPORT_PARENT_PAGE_ID, report_page_title, report_blocks
     )
 
     if not report_page_id:

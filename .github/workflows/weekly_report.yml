@@ -44,6 +44,7 @@ jobs:
           GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
           # モデルを変更したい場合は GitHub Secret に設定（未設定時: gemini-2.0-flash）
           GEMINI_MODEL:       ${{ secrets.GEMINI_MODEL }}
+          WEEKLY_REPORT_PARENT_PAGE_ID: ${{ secrets.WEEKLY_REPORT_PARENT_PAGE_ID }}
           # Gmail 設定（完了メール送信用）
           GMAIL_ADDRESS:      ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
