@@ -30,7 +30,8 @@ env/
 # ===========================
 # Output / Download folders
 # ===========================
-output/
+output/*
+!output/slides/
 downloads/
 
 # ===========================
