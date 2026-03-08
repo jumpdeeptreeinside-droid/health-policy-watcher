@@ -62,7 +62,6 @@ except ImportError:
 
 NOTIFY_TO: List[str] = [
     "jump.deep.tree.inside@gmail.com",
-    "kremlin006@gmail.com",
 ]
 
 _NOTION_HEADERS = {
