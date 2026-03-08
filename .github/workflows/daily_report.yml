@@ -1,0 +1,64 @@
+name: 日次進捗レポート (Health Policy Watcher)
+
+on:
+  # 毎朝 JST 8:00 に実行（UTC 23:00 = JST 翌 8:00）
+  schedule:
+    - cron: '0 23 * * *'
+
+  # GitHub Actions 画面から手動実行も可能
+  workflow_dispatch:
+
+concurrency:
+  group: daily-report
+  cancel-in-progress: false
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # ── 1. リポジトリをチェックアウト ──────────────────────
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      # ── 2. Python 環境のセットアップ ───────────────────────
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. 依存パッケージのインストール ────────────────────
+      - name: 依存パッケージをインストール
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 4. 日次進捗レポートを送信 ───────────────────────────
+      - name: 日次進捗レポートを送信
+        env:
+          NOTION_API_KEY:     ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          GMAIL_ADDRESS:      ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          python src/daily_report.py
+
+      # ── 5. 失敗時の通知 ────────────────────────────────────
+      - name: 失敗通知メールを送信
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.GMAIL_ADDRESS }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "【エラー】日次進捗レポート 失敗 - 要確認"
+          to: jump.deep.tree.inside@gmail.com
+          from: ${{ secrets.GMAIL_ADDRESS }}
+          body: |
+            日次進捗レポートの送信に失敗しました。
+
+            ログを確認してください:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
