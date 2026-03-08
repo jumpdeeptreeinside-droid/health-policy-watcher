@@ -666,6 +666,25 @@ class NotionWordPressUploader:
         target = today_18 if now_jst < today_18 else tomorrow_6
         return target.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
 
+    def _truncate_at_factcheck(self, blocks: List[Dict]) -> List[Dict]:
+        """
+        「ファクトチェックレポート」見出しが出現した時点でブロックを切り捨てる。
+        Notion上のデータは変更しない（投稿時のみ除外）。
+        """
+        _FACTCHECK_KEYWORD = "ファクトチェック"
+        for i, block in enumerate(blocks):
+            block_type = block.get('type', '')
+            if block_type in ('heading_1', 'heading_2', 'heading_3'):
+                rich_text = block.get(block_type, {}).get('rich_text', [])
+                heading_text = ''.join(rt.get('plain_text', '') for rt in rich_text)
+                if _FACTCHECK_KEYWORD in heading_text:
+                    logger.info(
+                        f"  「{heading_text}」見出しを検出 → "
+                        f"以降 {len(blocks) - i} ブロックを除外"
+                    )
+                    return blocks[:i]
+        return blocks
+
     def _markdown_to_html(self, md_content: str) -> str:
         """Markdown 文字列を HTML に変換する"""
         self.md_engine.reset()
@@ -760,6 +779,10 @@ class NotionWordPressUploader:
                 continue
 
             logger.info(f"  取得ブロック数: {len(blocks)}")
+
+            # ── ファクトチェックレポート以降のブロックを除外
+            blocks = self._truncate_at_factcheck(blocks)
+            logger.info(f"  変換対象ブロック数: {len(blocks)}")
 
             # ── ブロック → Markdown → HTML 変換
             md_content   = self.converter.convert(blocks)
