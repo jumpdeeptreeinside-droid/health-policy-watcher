@@ -84,6 +84,10 @@ def _load_config() -> tuple[str, str, str, str]:
 
 NOTION_API_KEY, NOTION_DATABASE_ID, GEMINI_API_KEY, GEMINI_MODEL = _load_config()
 
+GMAIL_ADDRESS     = os.environ.get('GMAIL_ADDRESS', '')
+GMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD', '')
+NOTIFY_TO = "jump.deep.tree.inside@gmail.com"
+
 # ──────────────────────────────────────────────
 # Gemini クライアント
 # ──────────────────────────────────────────────
@@ -594,6 +598,52 @@ class NotionAPI:
             return False
 
 # ──────────────────────────────────────────────
+# メール通知
+# ──────────────────────────────────────────────
+def send_factcheck_notification(processed_articles: list) -> None:
+    """ファクトチェック待ち記事の通知メールを送信する"""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
+        logger.warning("Gmail未設定のため通知メールをスキップします")
+        return
+    if not processed_articles:
+        return
+
+    article_list = "\n".join(
+        f"  [{i+1}] {art['title']}" for i, art in enumerate(processed_articles)
+    )
+    body = f"""\
+【医療政策ウォッチャー】ファクトチェック待ち記事のお知らせ
+
+以下の記事のコンテンツが自動生成されました。
+ファクトチェックをお願いします。
+
+■ ファクトチェック待ち記事（{len(processed_articles)}件）
+{article_list}
+
+ファクトチェック完了後、Notionで
+Status(コンテンツ作成) を「完了」に変更してください。
+"""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"【要対応】ファクトチェック待ち記事 {len(processed_articles)}件"
+    msg["From"]    = GMAIL_ADDRESS
+    msg["To"]      = NOTIFY_TO
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            server.sendmail(GMAIL_ADDRESS, NOTIFY_TO, msg.as_string())
+        logger.info(f"  ファクトチェック通知メール送信完了: {NOTIFY_TO}")
+    except Exception as e:
+        logger.error(f"  メール送信失敗: {e}")
+
+
+# ──────────────────────────────────────────────
 # MHLW クローラー（PDF ダウンロード）
 # ──────────────────────────────────────────────
 def _sanitize_filename(text: str, max_len: int = 80) -> str:
@@ -978,14 +1028,15 @@ def save_to_notion(
 # ──────────────────────────────────────────────
 # メイン処理
 # ──────────────────────────────────────────────
-def process_pdf_pages(notion: NotionAPI) -> int:
-    """執筆待ち(PDF) のページを処理して成功件数を返す"""
+def process_pdf_pages(notion: NotionAPI) -> tuple:
+    """執筆待ち(PDF) のページを処理して (成功件数, 処理済み記事リスト) を返す"""
     logger.info("\n" + "="*50)
     logger.info("  執筆待ち(PDF) の処理開始")
     logger.info("="*50)
     pages = notion.query_pages("執筆待ち(PDF)")
     logger.info(f"{len(pages)} 件のページを検出")
     success = 0
+    processed_articles: list = []
 
     for page in pages:
         page_id    = page["id"]
@@ -1023,25 +1074,37 @@ def process_pdf_pages(notion: NotionAPI) -> int:
         if script_pid:
             notion.set_child_page_link(page_id, "Script(Podcast)", script_pid)
 
+        # Article＆Script Title を更新
+        blog_title, _ = extract_title_from_markdown(blog)
+        if blog_title:
+            notion.update_properties(page_id, {
+                "Article＆Script Title": {
+                    "rich_text": [{"type": "text", "text": {"content": blog_title[:2000]}}]
+                }
+            })
+            logger.info(f"  Article＆Script Title: {blog_title[:50]}")
+
         if notion.update_status(page_id, "ファクトチェック待ち"):
             logger.info("  ✓ ステータス: 執筆待ち(PDF) → ファクトチェック待ち")
             success += 1
+            processed_articles.append({"title": title})
         else:
             logger.error("  ✗ ステータス更新失敗")
 
         time.sleep(3)
 
-    return success
+    return success, processed_articles
 
 
-def process_url_pages(notion: NotionAPI) -> int:
-    """執筆待ち(URL) のページを処理して成功件数を返す"""
+def process_url_pages(notion: NotionAPI) -> tuple:
+    """執筆待ち(URL) のページを処理して (成功件数, 処理済み記事リスト) を返す"""
     logger.info("\n" + "="*50)
     logger.info("  執筆待ち(URL) の処理開始")
     logger.info("="*50)
     pages = notion.query_pages("執筆待ち(URL)")
     logger.info(f"{len(pages)} 件のページを検出")
     success = 0
+    processed_articles: list = []
 
     for page in pages:
         page_id    = page["id"]
@@ -1071,15 +1134,26 @@ def process_url_pages(notion: NotionAPI) -> int:
         if script_pid:
             notion.set_child_page_link(page_id, "Script(Podcast)", script_pid)
 
+        # Article＆Script Title を更新
+        blog_title, _ = extract_title_from_markdown(blog)
+        if blog_title:
+            notion.update_properties(page_id, {
+                "Article＆Script Title": {
+                    "rich_text": [{"type": "text", "text": {"content": blog_title[:2000]}}]
+                }
+            })
+            logger.info(f"  Article＆Script Title: {blog_title[:50]}")
+
         if notion.update_status(page_id, "ファクトチェック待ち"):
             logger.info("  ✓ ステータス: 執筆待ち(URL) → ファクトチェック待ち")
             success += 1
+            processed_articles.append({"title": title})
         else:
             logger.error("  ✗ ステータス更新失敗")
 
         time.sleep(3)
 
-    return success
+    return success, processed_articles
 
 
 def main() -> None:
@@ -1089,8 +1163,12 @@ def main() -> None:
 
     notion = NotionAPI(NOTION_API_KEY, NOTION_DATABASE_ID)
 
-    pdf_success = process_pdf_pages(notion)
-    url_success = process_url_pages(notion)
+    pdf_success, pdf_articles = process_pdf_pages(notion)
+    url_success, url_articles = process_url_pages(notion)
+
+    all_processed = pdf_articles + url_articles
+    if all_processed:
+        send_factcheck_notification(all_processed)
 
     logger.info("\n" + "=" * 60)
     logger.info("  処理完了サマリー")

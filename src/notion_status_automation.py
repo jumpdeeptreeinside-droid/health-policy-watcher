@@ -59,6 +59,49 @@ except ImportError:
     logger.error("config.py ファイルが見つからず、環境変数も設定されていません。")
     sys.exit(1)
 
+GMAIL_ADDRESS     = os.environ.get('GMAIL_ADDRESS', '')
+GMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD', '')
+NOTIFY_TO = "jump.deep.tree.inside@gmail.com"
+
+
+def send_podcast_notification(articles: list) -> None:
+    """音声化待ちになった記事の通知メールを送信する"""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
+        logger.warning("Gmail未設定のため通知メールをスキップします")
+        return
+
+    article_list = "\n".join(
+        f"  [{i+1}] {art['title']}" for i, art in enumerate(articles)
+    )
+    body = f"""\
+【医療政策ウォッチャー】音声化待ち記事のお知らせ
+
+以下の記事の音声収録をお願いします。
+
+■ 音声化待ち記事（{len(articles)}件）
+{article_list}
+
+収録完了後、Notionで Status(Podcast) を「完了」に変更してください。
+"""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"【要対応】音声化待ち記事 {len(articles)}件"
+    msg["From"]    = GMAIL_ADDRESS
+    msg["To"]      = NOTIFY_TO
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            server.sendmail(GMAIL_ADDRESS, NOTIFY_TO, msg.as_string())
+        logger.info(f"音声化待ち通知メール送信完了: {NOTIFY_TO}")
+    except Exception as e:
+        logger.error(f"メール送信失敗: {e}")
+
 
 class NotionAutomation:
     """Notionデータベースのステータス自動更新を行うクラス"""
@@ -151,8 +194,8 @@ class NotionAutomation:
 
     def process_content_complete_status(self) -> int:
         """
-        Status(コンテンツ作成)が「コンテンツ作成完了」のページを処理
-        
+        Status(コンテンツ作成)が「完了」のページを処理
+
         処理内容:
         - Status(Web)が「-」（デフォルト）の場合のみ「投稿待ち」に変更
         - Status(Podcast)が「-」（デフォルト）の場合のみ「音声化待ち」に変更
@@ -160,64 +203,69 @@ class NotionAutomation:
         Returns:
             処理したページ数
         """
-        logger.info("Status(コンテンツ作成)が「コンテンツ作成完了」のページを検索中...")
-        
-        # フィルター: Status(コンテンツ作成) = "コンテンツ作成完了"
+        logger.info("Status(コンテンツ作成)が「完了」のページを検索中...")
+
+        # フィルター: Status(コンテンツ作成) = "完了"
         filter_conditions = {
             "property": "Status(コンテンツ作成)",
             "status": {
-                "equals": "コンテンツ作成完了"
+                "equals": "完了"
             }
         }
         
         pages = self.query_database(filter_conditions)
         logger.info(f"{len(pages)} 件のページが見つかりました")
-        
+
         update_count = 0
-        
+        podcast_notified: list = []  # 音声化待ちになった記事リスト
+
         for page in pages:
             page_id = page.get('id')
             title = self.get_property_value(page, 'Title') or 'タイトルなし'
-            
+
             # 現在のステータスを確認
-            status_web = self.get_property_value(page, 'Status(Web)')
+            status_web     = self.get_property_value(page, 'Status(Web)')
             status_podcast = self.get_property_value(page, 'Status(Podcast)')
-            
+
             logger.info(f"\n処理中: {title[:50]}...")
             logger.info(f"  現在のStatus(Web): {status_web}")
             logger.info(f"  現在のStatus(Podcast): {status_podcast}")
-            
+
             # 更新するプロパティを準備
             properties_to_update = {}
-            
+            will_set_podcast = False
+
             # Status(Web)が「-」（デフォルト）の場合のみ「投稿待ち」に変更
             if not status_web or status_web == "-":
                 properties_to_update["Status(Web)"] = {
-                    "status": {
-                        "name": "投稿待ち"
-                    }
+                    "status": {"name": "投稿待ち"}
                 }
                 logger.info("  → Status(Web)を「投稿待ち」に変更")
-            
+
             # Status(Podcast)が「-」（デフォルト）の場合のみ「音声化待ち」に変更
             if not status_podcast or status_podcast == "-":
                 properties_to_update["Status(Podcast)"] = {
-                    "status": {
-                        "name": "音声化待ち"
-                    }
+                    "status": {"name": "音声化待ち"}
                 }
                 logger.info("  → Status(Podcast)を「音声化待ち」に変更")
-            
+                will_set_podcast = True
+
             # 更新実行
             if properties_to_update:
                 if self.update_page_properties(page_id, properties_to_update):
                     logger.info("  ✅ 更新成功")
                     update_count += 1
+                    if will_set_podcast:
+                        podcast_notified.append({"title": title})
                 else:
                     logger.error("  ❌ 更新失敗")
             else:
                 logger.info("  ⏭️  更新不要（既に適切なステータス）")
-        
+
+        # 音声化待ちになった記事があればメール通知
+        if podcast_notified:
+            send_podcast_notification(podcast_notified)
+
         return update_count
 
     def process_date_recording(self) -> int:

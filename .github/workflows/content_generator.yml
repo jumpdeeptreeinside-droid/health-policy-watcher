@@ -44,6 +44,8 @@ jobs:
           # 推奨: gemini-3-pro-preview（ローカルと同品質）
           # 未設定の場合は gemini-2.0-flash を使用
           GEMINI_MODEL:       ${{ secrets.GEMINI_MODEL }}
+          GMAIL_ADDRESS:      ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: |
           python src/github_content_generator.py
 
