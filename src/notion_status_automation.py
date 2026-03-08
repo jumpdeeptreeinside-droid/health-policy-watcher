@@ -61,7 +61,7 @@ except ImportError:
 
 GMAIL_ADDRESS     = os.environ.get('GMAIL_ADDRESS', '')
 GMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD', '')
-NOTIFY_TO = "jump.deep.tree.inside@gmail.com"
+NOTIFY_TO = ["jump.deep.tree.inside@gmail.com", "kremlin006@gmail.com"]
 
 
 def send_podcast_notification(articles: list) -> None:
@@ -88,16 +88,17 @@ def send_podcast_notification(articles: list) -> None:
 収録完了後、Notionで Status(Podcast) を「完了」に変更してください。
 """
     msg = MIMEMultipart("alternative")
+    recipients = NOTIFY_TO if isinstance(NOTIFY_TO, list) else [NOTIFY_TO]
     msg["Subject"] = f"【要対応】音声化待ち記事 {len(articles)}件"
     msg["From"]    = GMAIL_ADDRESS
-    msg["To"]      = NOTIFY_TO
+    msg["To"]      = ", ".join(recipients)
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
     try:
         with smtplib.SMTP("smtp.gmail.com", 587) as server:
             server.starttls()
             server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_ADDRESS, NOTIFY_TO, msg.as_string())
+            server.sendmail(GMAIL_ADDRESS, recipients, msg.as_string())
         logger.info(f"音声化待ち通知メール送信完了: {NOTIFY_TO}")
     except Exception as e:
         logger.error(f"メール送信失敗: {e}")
