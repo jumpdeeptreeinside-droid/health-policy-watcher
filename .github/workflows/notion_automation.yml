@@ -8,6 +8,10 @@ on:
   # 手動実行も可能
   workflow_dispatch:
 
+concurrency:
+  group: notion-automation
+  cancel-in-progress: false
+
 jobs:
   update-notion-status:
     runs-on: ubuntu-latest
@@ -42,6 +46,22 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: automation-error-logs
-          path: |
-            notion_automation.log
+          path: notion_automation.log
           retention-days: 7
+
+      - name: 失敗通知メールを送信
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.GMAIL_ADDRESS }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "【エラー】Notionステータス自動更新 失敗 - 要確認"
+          to: jump.deep.tree.inside@gmail.com
+          from: ${{ secrets.GMAIL_ADDRESS }}
+          body: |
+            Notionステータス自動更新に失敗しました。
+
+            ログを確認してください:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

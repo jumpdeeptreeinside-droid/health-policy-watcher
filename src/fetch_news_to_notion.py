@@ -58,12 +58,18 @@ try:
     # まず環境変数を確認（GitHub Actions用）
     NOTION_API_KEY = os.environ.get('NOTION_API_KEY')
     NOTION_DATABASE_ID = os.environ.get('NOTION_DATABASE_ID')
+    GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+    GEMINI_MODEL   = os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash')
     
     # 環境変数がない場合はconfig.pyから読み込む（ローカル実行用）
     if not NOTION_API_KEY or not NOTION_DATABASE_ID:
         import config
         NOTION_API_KEY = config.NOTION_API_KEY
         NOTION_DATABASE_ID = config.NOTION_DATABASE_ID
+        if not GEMINI_API_KEY:
+            GEMINI_API_KEY = getattr(config, 'GEMINI_API_KEY', None)
+        if not GEMINI_MODEL or GEMINI_MODEL == 'gemini-2.0-flash':
+            GEMINI_MODEL = getattr(config, 'GEMINI_MODEL_NAME', 'gemini-2.0-flash')
         logger.info("config.py から設定を読み込みました")
     else:
         logger.info("環境変数から設定を読み込みました")
@@ -79,6 +85,74 @@ except AttributeError as e:
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
+
+
+_PDF_DOMAINS = ("mhlw.go.jp", "mof.go.jp", "cao.go.jp")
+
+_SCORE_PROMPT = """\
+あなたは医療政策・ヘルスケア業界の専門アナリストです。
+以下のニュース記事タイトルリストを評価し、JSON形式で回答してください。
+
+評価基準:
+- score (1-5): 薬局・ドラッグストア・医療政策への関連度・重要度
+  5=非常に重要（政策変更・診療報酬・規制など）
+  4=重要（業界動向・市場影響あり）
+  3=参考程度
+  2=やや関連薄い
+  1=ほぼ無関係
+
+出力形式（配列インデックスは入力と対応）:
+[
+  {"score": 5, "weekly": true},
+  {"score": 3, "weekly": false},
+  ...
+]
+weekly=true は WeeklyReport 候補として推奨する場合。
+
+記事タイトルリスト:
+{titles}
+
+JSONのみ出力してください。前置き・説明・コードブロック不要。
+"""
+
+
+def score_articles_with_gemini(articles: List["NewsArticle"]) -> List[dict]:
+    """Gemini で記事の関連度スコアとWeeklyReport推奨を一括評価する"""
+    if not GEMINI_API_KEY:
+        logger.warning("GEMINI_API_KEY 未設定のためスコアリングをスキップします")
+        return [{"score": 0, "weekly": False}] * len(articles)
+
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+        client = genai.Client(api_key=GEMINI_API_KEY)
+    except ImportError:
+        logger.warning("google-genai 未インストールのためスコアリングをスキップします")
+        return [{"score": 0, "weekly": False}] * len(articles)
+
+    import json as _json
+    titles_text = "\n".join(f"{i+1}. {a.title}" for i, a in enumerate(articles))
+    prompt = _SCORE_PROMPT.format(titles=titles_text)
+
+    try:
+        resp = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[prompt],
+            config=genai_types.GenerateContentConfig(temperature=0.2),
+        )
+        raw = resp.text.strip()
+        # コードブロック除去
+        raw = raw.strip("` \n")
+        if raw.startswith("json"):
+            raw = raw[4:].strip()
+        scores = _json.loads(raw)
+        if len(scores) != len(articles):
+            logger.warning(f"スコア件数不一致: {len(scores)} vs {len(articles)}")
+            scores += [{"score": 0, "weekly": False}] * (len(articles) - len(scores))
+        return scores
+    except Exception as e:
+        logger.error(f"Gemini スコアリングエラー: {e}")
+        return [{"score": 0, "weekly": False}] * len(articles)
 
 
 class NewsArticle:
@@ -686,58 +760,49 @@ class NotionUploader:
             logger.warning(f"重複チェックエラー: {e}")
             return False
 
-    def add_article(self, article: NewsArticle) -> Optional[str]:
+    def add_article(self, article: NewsArticle, score_info: Optional[dict] = None) -> Optional[str]:
         """
         Notionデータベースに記事を追加
 
         Args:
-            article: 追加するNewsArticleオブジェクト
+            article:    追加するNewsArticleオブジェクト
+            score_info: {"score": int, "weekly": bool} Gemini スコア情報（任意）
 
         Returns:
             成功時はページID、失敗時はNone
         """
         try:
-            # 現在の日時（JST）
             now = datetime.now(timezone.utc).astimezone()
             date_str = now.strftime('%Y-%m-%d')
-            
-            # プロパティを構築
+
             properties = {
                 "Title": {
-                    "title": [
-                        {
-                            "text": {
-                                "content": article.title
-                            }
-                        }
-                    ]
+                    "title": [{"text": {"content": article.title}}]
                 },
                 "URL(Source)": {
                     "url": article.url
                 },
                 "Date(Search)": {
-                    "date": {
-                        "start": date_str
-                    }
-                }
+                    "date": {"start": date_str}
+                },
             }
-            
-            # Sourceプロパティが存在する場合は追加（存在しない場合はスキップ）
-            # ※この部分は実際のDBスキーマに合わせて調整
-            # properties["Source"] = {
-            #     "select": {
-            #         "name": article.source
-            #     }
-            # }
-            
-            # ページを作成
+
+            # スコアに応じて WeeklyReport? と Status(コンテンツ作成) を自動設定
+            if score_info and score_info.get("score", 0) > 0:
+                if score_info.get("weekly"):
+                    properties["WeeklyReport?"] = {"status": {"name": "Yes"}}
+
+                # PDF系サイトかどうかで執筆タイプを振り分け
+                is_pdf = any(d in article.url for d in _PDF_DOMAINS)
+                content_status = "執筆待ち(PDF)" if is_pdf else "執筆待ち(URL)"
+                properties["Status(コンテンツ作成)"] = {"status": {"name": content_status}}
+
             new_page = self.notion.pages.create(
                 parent={"database_id": self.database_id},
-                properties=properties
+                properties=properties,
             )
-            
             return new_page['id']
-            
+
         except Exception as e:
             logger.error(f"Notion追加エラー: {e}")
             return None
@@ -757,27 +822,38 @@ class NotionUploader:
         logger.info("=" * 50)
         
         stats = {"success": 0, "skip": 0, "fail": 0}
-        
-        for i, article in enumerate(articles, 1):
-            logger.info(f"\n[{i}/{len(articles)}] 処理中: {article.title[:50]}...")
-            
-            # 重複チェック
+
+        # 新規記事のみ抽出（重複除去）
+        new_articles = []
+        for article in articles:
             if self.check_url_exists(article.url):
-                logger.info(f"⏭️  スキップ: 既に登録済み ({article.source})")
                 stats["skip"] += 1
-                continue
-            
-            # Notionに追加
-            page_id = self.add_article(article)
-            
+            else:
+                new_articles.append(article)
+
+        logger.info(f"新規: {len(new_articles)}件 / スキップ: {stats['skip']}件")
+
+        # Gemini で一括スコアリング（新規記事のみ）
+        scores: List[dict] = []
+        if new_articles:
+            logger.info("Gemini でスコアリング中...")
+            scores = score_articles_with_gemini(new_articles)
+
+        for i, article in enumerate(new_articles):
+            logger.info(f"\n[{i+1}/{len(new_articles)}] 処理中: {article.title[:50]}...")
+            score_info = scores[i] if i < len(scores) else None
+            if score_info:
+                logger.info(f"  スコア: {score_info.get('score')} / WeeklyReport推奨: {score_info.get('weekly')}")
+
+            page_id = self.add_article(article, score_info)
+
             if page_id:
                 logger.info(f"✅ 成功: {article.source} - {article.title[:50]}")
                 stats["success"] += 1
             else:
                 logger.error(f"❌ 失敗: {article.source} - {article.title[:50]}")
                 stats["fail"] += 1
-            
-            # API制限を考慮して待機
+
             time.sleep(0.5)
         
         logger.info("\n" + "=" * 50)

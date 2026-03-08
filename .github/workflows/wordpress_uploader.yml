@@ -11,6 +11,10 @@ on:
   # GitHub Actions 画面から手動実行も可能
   workflow_dispatch:
 
+concurrency:
+  group: wordpress-uploader
+  cancel-in-progress: false
+
 jobs:
   upload-to-wordpress:
     runs-on: ubuntu-latest
@@ -37,11 +41,13 @@ jobs:
       # ── 4. WordPress アップロードスクリプトを実行 ───────────
       - name: Notion → WordPress 自動投稿を実行
         env:
-          NOTION_API_KEY:        ${{ secrets.NOTION_API_KEY }}
-          NOTION_DATABASE_ID:    ${{ secrets.NOTION_DATABASE_ID }}
-          WORDPRESS_URL:         ${{ secrets.WORDPRESS_URL }}
-          WORDPRESS_USERNAME:    ${{ secrets.WORDPRESS_USERNAME }}
+          NOTION_API_KEY:         ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID:     ${{ secrets.NOTION_DATABASE_ID }}
+          WORDPRESS_URL:          ${{ secrets.WORDPRESS_URL }}
+          WORDPRESS_USERNAME:     ${{ secrets.WORDPRESS_USERNAME }}
           WORDPRESS_APP_PASSWORD: ${{ secrets.WORDPRESS_APP_PASSWORD }}
+          GMAIL_ADDRESS:          ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD:     ${{ secrets.GMAIL_APP_PASSWORD }}
         run: |
           python src/notion_wordpress_uploader.py
 
@@ -51,6 +57,22 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wordpress-uploader-error-log-${{ github.run_id }}
-          path: |
-            *.log
+          path: "*.log"
           retention-days: 7
+
+      - name: 失敗通知メールを送信
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.GMAIL_ADDRESS }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "【エラー】WordPress自動投稿 失敗 - 要確認"
+          to: jump.deep.tree.inside@gmail.com
+          from: ${{ secrets.GMAIL_ADDRESS }}
+          body: |
+            WordPress自動投稿に失敗しました。
+
+            ログを確認してください:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

@@ -56,6 +56,8 @@ try:
     WORDPRESS_URL          = os.environ.get('WORDPRESS_URL')
     WORDPRESS_USERNAME     = os.environ.get('WORDPRESS_USERNAME')
     WORDPRESS_APP_PASSWORD = os.environ.get('WORDPRESS_APP_PASSWORD')
+    GMAIL_ADDRESS          = os.environ.get('GMAIL_ADDRESS', '')
+    GMAIL_APP_PASSWORD_WP  = os.environ.get('GMAIL_APP_PASSWORD', '')
 
     _missing = not all([
         NOTION_API_KEY, NOTION_DATABASE_ID,
@@ -72,6 +74,10 @@ try:
         DEFAULT_CATEGORY_ID    = getattr(config, 'DEFAULT_CATEGORY_ID',    None)
         DEFAULT_TAGS           = getattr(config, 'DEFAULT_TAGS',           [])
         DEFAULT_FEATURED_IMAGE_ID = getattr(config, 'DEFAULT_FEATURED_IMAGE_ID', None)
+        if not GMAIL_ADDRESS:
+            GMAIL_ADDRESS = getattr(config, 'GMAIL_ADDRESS', '')
+        if not GMAIL_APP_PASSWORD_WP:
+            GMAIL_APP_PASSWORD_WP = getattr(config, 'GMAIL_APP_PASSWORD', '')
         logger.info("config.py から設定を読み込みました")
     else:
         DEFAULT_CATEGORY_ID       = None
@@ -79,9 +85,53 @@ try:
         DEFAULT_FEATURED_IMAGE_ID = None
         logger.info("環境変数から設定を読み込みました")
 
+NOTIFY_TO_WP = "jump.deep.tree.inside@gmail.com"
+
 except ImportError:
     logger.error("config.py が見つからず、環境変数も設定されていません。処理を中断します。")
     sys.exit(1)
+
+
+def send_wordpress_notification(uploaded_articles: list) -> None:
+    """WordPress投稿完了の通知メールを送信する"""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD_WP:
+        logger.warning("Gmail未設定のため完了通知メールをスキップします")
+        return
+
+    article_lines = []
+    for i, art in enumerate(uploaded_articles):
+        article_lines.append(f"  [{i+1}] {art['title']}")
+        article_lines.append(f"      公開予定: {art['scheduled']}")
+    article_list = "\n".join(article_lines)
+
+    body = f"""\
+【医療政策ウォッチャー】WordPress投稿完了のお知らせ
+
+以下の記事がWordPressに自動投稿されました。
+
+■ 投稿済み記事（{len(uploaded_articles)}件）
+{article_list}
+
+WordPressの管理画面で内容を確認してください。
+"""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"【完了】WordPress自動投稿 {len(uploaded_articles)}件"
+    msg["From"]    = GMAIL_ADDRESS
+    msg["To"]      = NOTIFY_TO_WP
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD_WP)
+            server.sendmail(GMAIL_ADDRESS, NOTIFY_TO_WP, msg.as_string())
+        logger.info(f"WordPress完了通知メール送信: {NOTIFY_TO_WP}")
+    except Exception as e:
+        logger.error(f"メール送信失敗: {e}")
 
 
 # ══════════════════════════════════════════════════════════
@@ -670,6 +720,7 @@ class NotionWordPressUploader:
         logger.info(f"予約公開時刻: {scheduled_time_jst} (UTC: {scheduled_time_utc})")
 
         success_count = 0
+        uploaded_articles: list = []
 
         for page in pages:
             page_id = page.get('id')
@@ -723,7 +774,7 @@ class NotionWordPressUploader:
             post_id = self.upload_to_wordpress(title, html_content, scheduled_time_utc)
 
             if post_id:
-                # ── Notion ステータスを「スケジュール済み」に更新
+                # ── Notion ステータスを「完了」に更新
                 if self.update_notion_status(page_id, "完了"):
                     logger.info(
                         f"  ✅ Notion ステータス更新: 投稿待ち → 完了"
@@ -734,8 +785,13 @@ class NotionWordPressUploader:
                         "Notion ステータスの更新に失敗しました"
                     )
                 success_count += 1
+                uploaded_articles.append({"title": title, "scheduled": scheduled_time_jst})
             else:
                 logger.error("  ❌ WordPress 投稿失敗。このページはスキップします。")
+
+        # 完了通知メール
+        if uploaded_articles:
+            send_wordpress_notification(uploaded_articles)
 
         return success_count
 

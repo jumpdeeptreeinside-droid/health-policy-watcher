@@ -270,72 +270,62 @@ class NotionAutomation:
 
     def process_date_recording(self) -> int:
         """
-        日付の自動記録を処理
-        
-        注意: この機能は現在の実装では完全には実現できません。
-        なぜなら、ステータスの「変更前」の値を知るためには、
-        別途履歴データベースを持つか、定期的にスナップショットを取る必要があるためです。
-        
-        代替案: ステータス変更時に日付が空欄の場合のみ、現在日付を記録する
-        
+        日付の自動記録を処理（フィルター活用で効率化）
+
+        全件取得せず、条件に合致するページのみ絞り込んで処理する。
+
         Returns:
             処理したページ数
         """
         logger.info("\n日付の自動記録処理を開始...")
-        
-        # すべてのページを取得
-        all_pages = self.query_database()
         update_count = 0
-        
         now = datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d')
-        
-        for page in all_pages:
+
+        # ── 1. Date(Select): 執筆待ちかつ日付未設定 ──────────────
+        pages_select = self.query_database({
+            "and": [
+                {"or": [
+                    {"property": "Status(コンテンツ作成)", "status": {"equals": "執筆待ち(URL)"}},
+                    {"property": "Status(コンテンツ作成)", "status": {"equals": "執筆待ち(PDF)"}},
+                ]},
+                {"property": "Date(Select)", "date": {"is_empty": True}},
+            ]
+        })
+        for page in pages_select:
             page_id = page.get('id')
             title = self.get_property_value(page, 'Title') or 'タイトルなし'
-            
-            properties_to_update = {}
-            
-            # Date(Select): Status(コンテンツ作成)が「執筆待ち」で日付が空の場合
-            status_content = self.get_property_value(page, 'Status(コンテンツ作成)')
-            date_select = self.get_property_value(page, 'Date(Select)')
-            
-            if status_content in ["執筆待ち(URL)", "執筆待ち(PDF)"] and not date_select:
-                properties_to_update["Date(Select)"] = {
-                    "date": {
-                        "start": now
-                    }
-                }
-                logger.info(f"{title[:30]}... → Date(Select)を記録")
-            
-            # Date(W-complete): Status(Web)が「スケジュール待ち」で日付が空の場合
-            status_web = self.get_property_value(page, 'Status(Web)')
-            date_w_complete = self.get_property_value(page, 'Date(W-complete)')
-            
-            if status_web == "スケジュール待ち" and not date_w_complete:
-                properties_to_update["Date(W-complete)"] = {
-                    "date": {
-                        "start": now
-                    }
-                }
-                logger.info(f"{title[:30]}... → Date(W-complete)を記録")
-            
-            # Date(P-complete): Status(Podcast)が「完了」で日付が空の場合
-            status_podcast = self.get_property_value(page, 'Status(Podcast)')
-            date_p_complete = self.get_property_value(page, 'Date(P-complete)')
-            
-            if status_podcast == "完了" and not date_p_complete:
-                properties_to_update["Date(P-complete)"] = {
-                    "date": {
-                        "start": now
-                    }
-                }
-                logger.info(f"{title[:30]}... → Date(P-complete)を記録")
-            
-            # 更新実行
-            if properties_to_update:
-                if self.update_page_properties(page_id, properties_to_update):
-                    update_count += 1
-        
+            if self.update_page_properties(page_id, {"Date(Select)": {"date": {"start": now}}}):
+                logger.info(f"  {title[:30]}... → Date(Select) 記録")
+                update_count += 1
+
+        # ── 2. Date(W-complete): スケジュール待ちかつ日付未設定 ──
+        pages_w = self.query_database({
+            "and": [
+                {"property": "Status(Web)", "status": {"equals": "スケジュール待ち"}},
+                {"property": "Date(W-complete)", "date": {"is_empty": True}},
+            ]
+        })
+        for page in pages_w:
+            page_id = page.get('id')
+            title = self.get_property_value(page, 'Title') or 'タイトルなし'
+            if self.update_page_properties(page_id, {"Date(W-complete)": {"date": {"start": now}}}):
+                logger.info(f"  {title[:30]}... → Date(W-complete) 記録")
+                update_count += 1
+
+        # ── 3. Date(P-complete): Podcast完了かつ日付未設定 ───────
+        pages_p = self.query_database({
+            "and": [
+                {"property": "Status(Podcast)", "status": {"equals": "完了"}},
+                {"property": "Date(P-complete)", "date": {"is_empty": True}},
+            ]
+        })
+        for page in pages_p:
+            page_id = page.get('id')
+            title = self.get_property_value(page, 'Title') or 'タイトルなし'
+            if self.update_page_properties(page_id, {"Date(P-complete)": {"date": {"start": now}}}):
+                logger.info(f"  {title[:30]}... → Date(P-complete) 記録")
+                update_count += 1
+
         return update_count
 
 

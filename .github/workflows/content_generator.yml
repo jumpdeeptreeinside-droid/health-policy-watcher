@@ -11,6 +11,10 @@ on:
   # GitHub Actions 画面から手動実行も可能
   workflow_dispatch:
 
+concurrency:
+  group: content-generator
+  cancel-in-progress: false
+
 jobs:
   generate-content:
     runs-on: ubuntu-latest
@@ -55,6 +59,22 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: content-generator-error-log-${{ github.run_id }}
-          path: |
-            *.log
+          path: "*.log"
           retention-days: 7
+
+      - name: 失敗通知メールを送信
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.GMAIL_ADDRESS }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "【エラー】コンテンツ自動生成 失敗 - 要確認"
+          to: jump.deep.tree.inside@gmail.com
+          from: ${{ secrets.GMAIL_ADDRESS }}
+          body: |
+            コンテンツ自動生成に失敗しました。
+
+            ログを確認してください:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

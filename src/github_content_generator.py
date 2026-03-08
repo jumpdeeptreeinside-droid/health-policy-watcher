@@ -612,9 +612,13 @@ def send_factcheck_notification(processed_articles: list) -> None:
     if not processed_articles:
         return
 
-    article_list = "\n".join(
-        f"  [{i+1}] {art['title']}" for i, art in enumerate(processed_articles)
-    )
+    article_lines = []
+    for i, art in enumerate(processed_articles):
+        article_lines.append(f"  [{i+1}] {art['title']}")
+        if art.get('preview'):
+            article_lines.append(f"      → {art['preview'][:150]}...")
+    article_list = "\n".join(article_lines)
+
     body = f"""\
 【医療政策ウォッチャー】ファクトチェック待ち記事のお知らせ
 
@@ -1087,7 +1091,8 @@ def process_pdf_pages(notion: NotionAPI) -> tuple:
         if notion.update_status(page_id, "ファクトチェック待ち"):
             logger.info("  ✓ ステータス: 執筆待ち(PDF) → ファクトチェック待ち")
             success += 1
-            processed_articles.append({"title": title})
+            _, blog_body = extract_title_from_markdown(blog)
+            processed_articles.append({"title": title, "preview": blog_body[:150].strip()})
         else:
             logger.error("  ✗ ステータス更新失敗")
 
@@ -1147,7 +1152,8 @@ def process_url_pages(notion: NotionAPI) -> tuple:
         if notion.update_status(page_id, "ファクトチェック待ち"):
             logger.info("  ✓ ステータス: 執筆待ち(URL) → ファクトチェック待ち")
             success += 1
-            processed_articles.append({"title": title})
+            _, blog_body = extract_title_from_markdown(blog)
+            processed_articles.append({"title": title, "preview": blog_body[:150].strip()})
         else:
             logger.error("  ✗ ステータス更新失敗")
 

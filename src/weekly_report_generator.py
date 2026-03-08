@@ -586,6 +586,23 @@ class NotionAPI:
             logger.warning(f"  {property_name} 更新失敗: {e}")
             return False
 
+    def query_this_week_articles(self, days: int = 7) -> list[dict]:
+        """直近 days 日間に Date(Search) が設定された記事を取得する（ニュース全リスト用）"""
+        from datetime import timedelta
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+        payload = {
+            "filter": {
+                "property": "Date(Search)",
+                "date": {"on_or_after": since},
+            },
+            "sorts": [{"property": "Date(Search)", "direction": "descending"}],
+        }
+        try:
+            return self._post(f"/databases/{self.database_id}/query", payload).get("results", [])
+        except Exception as e:
+            logger.warning(f"今週の記事取得エラー: {e}")
+            return []
+
     def update_weekly_report_status(self, page_id: str, status_name: str) -> bool:
         return self.update_properties(
             page_id,
@@ -739,6 +756,17 @@ def extract_title_candidates(report_content: str) -> list[str]:
 # ──────────────────────────────────────────────
 # メール送信
 # ──────────────────────────────────────────────
+def _build_slide_github_url(slide_filepath: Optional[Path]) -> str:
+    """GitHub Actions 環境変数からスライドの GitHub URL を生成する"""
+    if not slide_filepath:
+        return "（スライド保存失敗）"
+    server  = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    repo    = os.environ.get("GITHUB_REPOSITORY", "")
+    if repo:
+        return f"{server}/{repo}/blob/master/output/slides/{slide_filepath.name}"
+    return f"output/slides/{slide_filepath.name}"
+
+
 def send_completion_email(
     vol_number: int,
     issue_date: str,
@@ -780,7 +808,7 @@ def send_completion_email(
   {notion_url}
 
 ■ Marp スライドファイル
-  GitHub リポジトリ: output/slides/{slide_filepath.name if slide_filepath else ""}
+  GitHub: {_build_slide_github_url(slide_filepath)}
 
 以上、ご確認をお願いします。
 """
@@ -915,7 +943,28 @@ def main() -> None:
     _, report_body    = extract_title_from_markdown(report_content)
     report_blocks     = markdown_to_notion_blocks(report_body)
 
-    # ── 末尾に固定セクションを追加 ────────────
+    # ── 末尾: 今週のニュース全リストを自動生成 ──
+    logger.info("\n[5b] 今週のニュース全リストを取得中...")
+    _DOMESTIC_DOMAINS = (".go.jp", "hgpi.org", "mhlw.go.jp", "mof.go.jp", "cao.go.jp")
+    week_pages = notion.query_this_week_articles(days=7)
+    domestic_titles: list[str] = []
+    international_titles: list[str] = []
+    for wp in week_pages:
+        t = notion.get_property(wp, "Title") or ""
+        u = notion.get_property(wp, "URL(Source)") or ""
+        if not t:
+            continue
+        if any(d in u for d in _DOMESTIC_DOMAINS):
+            domestic_titles.append(t)
+        else:
+            international_titles.append(t)
+    logger.info(f"  国内: {len(domestic_titles)}件 / 海外: {len(international_titles)}件")
+
+    def _title_blocks(titles: list[str]) -> list[dict]:
+        if not titles:
+            return [_block("paragraph", [_make_rich_text("（今週の記事なし）")])]
+        return [_block("bulleted_list_item", [_make_rich_text(t[:2000])]) for t in titles]
+
     report_blocks += [
         {"object": "block", "type": "divider", "divider": {}},
         _block("heading_2", [_make_rich_text("今週の医療・保健政策ニュース全リスト")]),
@@ -923,7 +972,9 @@ def main() -> None:
         _block("bulleted_list_item", [_make_rich_text("そんな方のために、私が今週チェックした国内外の政策ニュースをリスト化しました。")]),
         _block("bulleted_list_item", [_make_rich_text("気になったものがあれば、Podcastをチェックしてみてください。")]),
         _block("heading_3", [_make_rich_text("▼国内医療政策")]),
+    ] + _title_blocks(domestic_titles) + [
         _block("heading_3", [_make_rich_text("▼海外保健政策")]),
+    ] + _title_blocks(international_titles) + [
         {"object": "block", "type": "divider", "divider": {}},
         _block("heading_2", [_make_rich_text("メンバーシップ限定")]),
     ]
