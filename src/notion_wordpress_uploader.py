@@ -85,11 +85,11 @@ try:
         DEFAULT_FEATURED_IMAGE_ID = None
         logger.info("環境変数から設定を読み込みました")
 
-NOTIFY_TO_WP = "jump.deep.tree.inside@gmail.com"
-
 except ImportError:
     logger.error("config.py が見つからず、環境変数も設定されていません。処理を中断します。")
     sys.exit(1)
+
+NOTIFY_TO_WP = "jump.deep.tree.inside@gmail.com"
 
 
 def send_wordpress_notification(uploaded_articles: list) -> None:
