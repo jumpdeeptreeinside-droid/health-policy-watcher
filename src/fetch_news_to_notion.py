@@ -157,11 +157,12 @@ def score_articles_with_gemini(articles: List["NewsArticle"]) -> List[dict]:
 
 class NewsArticle:
     """ニュース記事を表すデータクラス"""
-    def __init__(self, title: str, url: str, source: str, published_date: Optional[str] = None):
+    def __init__(self, title: str, url: str, source: str, published_date: Optional[str] = None, web_url: Optional[str] = None):
         self.title = title
         self.url = url
         self.source = source
         self.published_date = published_date
+        self.web_url = web_url  # URL(Web)プロパティ用（自社WordPressなど）
 
     def __repr__(self):
         return f"NewsArticle(title='{self.title[:30]}...', source='{self.source}')"
@@ -647,6 +648,51 @@ class NewsCollector:
 
         return articles
 
+    def fetch_wordpress_rss(self, limit: int = 20) -> List[NewsArticle]:
+        """
+        てくてくラジオ（WordPress）のRSSフィードから最新記事を取得し、
+        URL(Web)プロパティ用のweb_urlとして格納する
+
+        Args:
+            limit: 取得する記事の最大数
+
+        Returns:
+            NewsArticleのリスト
+        """
+        logger.info("てくてくラジオ（WordPress）RSS を取得中...")
+        articles = []
+
+        try:
+            rss_url = "https://tekutekuradio.com/?feed=rss2"
+            feed = feedparser.parse(rss_url)
+
+            if feed.bozo:
+                logger.warning(f"WordPress RSS解析警告: {feed.bozo_exception}")
+
+            for entry in feed.entries[:limit]:
+                title = entry.get('title', 'タイトルなし')
+                link = entry.get('link', '')
+                published = entry.get('published', None)
+
+                if not link:
+                    continue
+
+                article = NewsArticle(
+                    title=title,
+                    url=link,
+                    source="てくてくラジオ",
+                    published_date=published,
+                    web_url=link,
+                )
+                articles.append(article)
+
+            logger.info(f"✅ てくてくラジオ: {len(articles)} 件の記事を取得")
+
+        except Exception as e:
+            logger.error(f"❌ てくてくラジオ RSS取得エラー: {e}")
+
+        return articles
+
     def collect_all(self, limit_per_source: int = 20) -> List[NewsArticle]:
         """
         すべての情報源からニュースを収集
@@ -701,7 +747,12 @@ class NewsCollector:
         # WHO
         who_articles = self.fetch_who_news(limit=limit_per_source)
         all_articles.extend(who_articles)
-        
+        time.sleep(1)
+
+        # てくてくラジオ（WordPress）
+        wp_articles = self.fetch_wordpress_rss(limit=limit_per_source)
+        all_articles.extend(wp_articles)
+
         logger.info("=" * 50)
         logger.info(f"合計 {len(all_articles)} 件の記事を収集しました")
         logger.info("=" * 50)
@@ -786,6 +837,9 @@ class NotionUploader:
                     "date": {"start": date_str}
                 },
             }
+
+            if article.web_url:
+                properties["URL(Web)"] = {"url": article.web_url}
 
             # スコアを参考値としてNotionに記録（自動ステータス変更はしない）
             if score_info and score_info.get("score", 0) > 0:
