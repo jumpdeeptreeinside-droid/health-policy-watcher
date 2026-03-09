@@ -103,8 +103,8 @@ _SCORE_PROMPT = """\
 
 出力形式（配列インデックスは入力と対応）:
 [
-  {"score": 5, "weekly": true},
-  {"score": 3, "weekly": false},
+  {{"score": 5, "weekly": true}},
+  {{"score": 3, "weekly": false}},
   ...
 ]
 weekly=true は WeeklyReport 候補として推奨する場合。
@@ -789,6 +789,8 @@ class NotionUploader:
 
             # スコアに応じて WeeklyReport? と Status(コンテンツ作成) を自動設定
             if score_info and score_info.get("score", 0) > 0:
+                properties["WeeklyReportScore"] = {"number": score_info.get("score")}
+
                 if score_info.get("weekly"):
                     properties["WeeklyReport?"] = {"status": {"name": "Yes"}}
 
