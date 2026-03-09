@@ -512,6 +512,18 @@ class NotionWordPressUploader:
             logger.error(f"  記事ページタイトル取得エラー (page_id={page_id}): {e}")
         return None
 
+    def update_notion_url_web(self, page_id: str, url: str) -> bool:
+        """Notion ページの URL(Web) プロパティを更新する"""
+        api_url = f"{self.notion_base}/pages/{page_id}"
+        payload = {"properties": {"URL(Web)": {"url": url}}}
+        try:
+            resp = requests.patch(api_url, headers=self.notion_headers, json=payload, timeout=30)
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            logger.warning(f"  ⚠️  URL(Web) 更新エラー: {e}")
+            return False
+
     def update_notion_status(self, page_id: str, status_name: str) -> bool:
         """Notion ページの Status(Web) を指定値に更新する"""
         url = f"{self.notion_base}/pages/{page_id}"
@@ -628,9 +640,11 @@ class NotionWordPressUploader:
                 timeout=30
             )
             resp.raise_for_status()
-            post_id: int = resp.json().get('id')
-            logger.info(f"  ✅ WordPress 投稿成功: ID={post_id}, タイトル='{title}'")
-            return post_id
+            resp_data = resp.json()
+            post_id: int = resp_data.get('id')
+            post_link: str = resp_data.get('link', '')
+            logger.info(f"  ✅ WordPress 投稿成功: ID={post_id}, URL={post_link}, タイトル='{title}'")
+            return post_id, post_link
 
         except requests.exceptions.HTTPError as e:
             logger.error(f"  ❌ HTTP エラー: {e}")
@@ -641,16 +655,16 @@ class NotionWordPressUploader:
                     logger.error(f"     メッセージ: {err.get('message')}")
                 except Exception:
                     logger.error(f"     レスポンス: {e.response.text[:300]}")
-            return None
+            return None, None
         except requests.exceptions.ConnectionError:
             logger.error("  ❌ 接続エラー: WordPress サイトに到達できません")
-            return None
+            return None, None
         except requests.exceptions.Timeout:
             logger.error("  ❌ タイムアウト: 30 秒以内に応答がありませんでした")
-            return None
+            return None, None
         except Exception as e:
             logger.error(f"  ❌ 予期しないエラー: {e}")
-            return None
+            return None, None
 
     def _next_schedule_jst(self) -> str:
         """
@@ -794,9 +808,15 @@ class NotionWordPressUploader:
 
             # ── WordPress に予約投稿
             logger.info(f"  WordPress に投稿中（予約: {scheduled_time_jst}）...")
-            post_id = self.upload_to_wordpress(title, html_content, scheduled_time_utc)
+            post_id, post_link = self.upload_to_wordpress(title, html_content, scheduled_time_utc)
 
             if post_id:
+                # ── Notion の URL(Web) にWordPressのURLを書き込む
+                if post_link and self.update_notion_url_web(page_id, post_link):
+                    logger.info(f"  ✅ Notion URL(Web) 更新: {post_link}")
+                else:
+                    logger.warning("  ⚠️  URL(Web) の更新に失敗しました")
+
                 # ── Notion ステータスを「完了」に更新
                 if self.update_notion_status(page_id, "完了"):
                     logger.info(
