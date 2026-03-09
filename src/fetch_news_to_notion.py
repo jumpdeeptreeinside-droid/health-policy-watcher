@@ -787,17 +787,9 @@ class NotionUploader:
                 },
             }
 
-            # スコアに応じて WeeklyReport? と Status(コンテンツ作成) を自動設定
+            # スコアを参考値としてNotionに記録（自動ステータス変更はしない）
             if score_info and score_info.get("score", 0) > 0:
                 properties["WeeklyReportScore"] = {"number": score_info.get("score")}
-
-                if score_info.get("weekly"):
-                    properties["WeeklyReport?"] = {"status": {"name": "Yes"}}
-
-                # PDF系サイトかどうかで執筆タイプを振り分け
-                is_pdf = any(d in article.url for d in _PDF_DOMAINS)
-                content_status = "執筆待ち(PDF)" if is_pdf else "執筆待ち(URL)"
-                properties["Status(コンテンツ作成)"] = {"status": {"name": content_status}}
 
             new_page = self.notion.pages.create(
                 parent={"database_id": self.database_id},
