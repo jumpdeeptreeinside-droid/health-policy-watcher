@@ -1,12 +1,7 @@
 name: ハルシネーションチェッカー
 
 on:
-  # content_generator (8:30 / 13:30 / 18:30 JST) の 30分後に実行
-  # 9:00 / 14:00 / 19:00 JST = 0:00 / 5:00 / 10:00 UTC
-  schedule:
-    - cron: '0 0,5,10 * * *'
-
-  # GitHub Actions 画面から手動実行も可能
+  # GitHub Actions 画面から手動実行
   workflow_dispatch:
 
 jobs:
