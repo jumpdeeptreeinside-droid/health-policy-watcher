@@ -8,9 +8,6 @@ on:
   # GitHub Actions 画面から手動実行も可能
   workflow_dispatch:
 
-permissions:
-  contents: write   # レポートファイルをコミット・プッシュするために必要
-
 jobs:
   generate-policy-report:
     runs-on: ubuntu-latest
@@ -20,8 +17,6 @@ jobs:
       # ── 1. リポジトリをチェックアウト ──────────────────────
       - name: リポジトリをチェックアウト
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       # ── 2. Python 環境のセットアップ ───────────────────────
       - name: Python 3.11 をセットアップ
@@ -49,16 +44,7 @@ jobs:
         run: |
           python src/weekly_policy_report.py
 
-      # ── 5. レポートファイルをコミット・プッシュ ────────────
-      - name: レポートファイルをコミット
-        run: |
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "GitHub Actions"
-          git add output/weekly_reports/
-          git diff --staged --quiet || git commit -m "feat: 医療政策ウィークリーレポート自動生成 ($(date +'%Y-%m-%d'))"
-          git push
-
-      # ── 6. 失敗時の通知メール ──────────────────────────────
+      # ── 5. 失敗時の通知メール ──────────────────────────────
       - name: 失敗通知メールを送信
         if: failure()
         uses: dawidd6/action-send-mail@v3
@@ -77,6 +63,5 @@ jobs:
             https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             よくある原因:
-            - WeeklyReport? = "Yes" または "完了" の記事が直近7日間に 0 件
+            - Status(コンテンツ作成)="完了" の記事が直近7日間に 0 件
             - Notion API や Gemini API のエラー
-            - スクレイピング失敗（対象サイトがブロック）
