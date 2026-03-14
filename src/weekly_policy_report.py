@@ -27,6 +27,7 @@ import smtplib
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -705,15 +706,22 @@ def send_completion_email(
 ■ 保存先: {md_path}
 ■ Notion: 各記事の Article(WeeklySummary) プロパティにリンクを設定済み
 
---- レポート本文 ---
-
-{report_content}
+レポート本文は添付の .md ファイルをご確認ください。
 """
-    msg = MIMEMultipart("alternative")
+    msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"]    = gmail_address
     msg["To"]      = NOTIFY_TO
     msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    # .md ファイルを添付
+    try:
+        md_bytes = md_path.read_bytes()
+        attachment = MIMEApplication(md_bytes, Name=md_path.name)
+        attachment["Content-Disposition"] = f'attachment; filename="{md_path.name}"'
+        msg.attach(attachment)
+    except Exception as e:
+        logger.warning(f"  添付ファイル読み込み失敗（本文のみ送信）: {e}")
 
     try:
         with smtplib.SMTP("smtp.gmail.com", 587) as srv:
