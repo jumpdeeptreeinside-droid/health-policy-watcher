@@ -11,6 +11,9 @@ on:
 permissions:
   contents: write   # スライドファイルと weekly_vol.txt をコミット・プッシュするために必要
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   generate-weekly-report:
     runs-on: ubuntu-latest

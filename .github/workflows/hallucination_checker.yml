@@ -4,6 +4,9 @@ on:
   # GitHub Actions 画面から手動実行
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   run-hallucination-checker:
     runs-on: ubuntu-latest

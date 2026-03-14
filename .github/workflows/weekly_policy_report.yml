@@ -8,6 +8,9 @@ on:
   # GitHub Actions 画面から手動実行も可能
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   generate-policy-report:
     runs-on: ubuntu-latest
