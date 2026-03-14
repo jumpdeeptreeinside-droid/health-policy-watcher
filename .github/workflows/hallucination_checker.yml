@@ -1,0 +1,68 @@
+name: ハルシネーションチェッカー
+
+on:
+  # content_generator (8:30 / 13:30 / 18:30 JST) の 30分後に実行
+  # 9:00 / 14:00 / 19:00 JST = 0:00 / 5:00 / 10:00 UTC
+  schedule:
+    - cron: '0 0,5,10 * * *'
+
+  # GitHub Actions 画面から手動実行も可能
+  workflow_dispatch:
+
+jobs:
+  run-hallucination-checker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── 1. リポジトリをチェックアウト ──────────────────────
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      # ── 2. Python 環境のセットアップ ───────────────────────
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. 依存パッケージのインストール ────────────────────
+      - name: 依存パッケージをインストール
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 4. ハルシネーションチェック実行 ────────────────────
+      - name: ハルシネーションチェックを実行
+        env:
+          NOTION_API_KEY:     ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
+          # モデルを変更したい場合は GitHub Secret に設定（未設定時: gemini-2.0-flash）
+          GEMINI_MODEL:       ${{ secrets.GEMINI_MODEL }}
+          GMAIL_ADDRESS:      ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          python src/hallucination_checker.py
+
+      # ── 5. 失敗時の通知メール ──────────────────────────────
+      - name: 失敗通知メールを送信
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.GMAIL_ADDRESS }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "【ハルシネーションチェック】GitHub Actions 実行失敗 - 要確認"
+          to: jump.deep.tree.inside@gmail.com
+          from: ${{ secrets.GMAIL_ADDRESS }}
+          body: |
+            ハルシネーションチェッカーの自動実行に失敗しました。
+
+            GitHub Actions のログを確認してください:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            よくある原因:
+            - Notion API や Gemini API のエラー
+            - スクレイピング失敗（対象サイトがブロック）
