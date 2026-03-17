@@ -5,7 +5,7 @@ GitHub Actions用 コンテンツ自動生成スクリプト
 
 機能:
   1. Notionデータベースを監視
-  2. Status(コンテンツ作成) が「執筆待ち(PDF)」or「執筆待ち(URL)」のページを検出
+  2. Status(コンテンツ作成) が「執筆待ち(pdf)」or「執筆待ち(url)」のページを検出
   3. Gemini API でブログ記事・Podcast台本を生成
   4. HealthPolicyWatcherDB の各ページ下に子ページとして保存:
        - ブログ記事  → Article(Web) プロパティにリンクを設定
@@ -1033,11 +1033,11 @@ def save_to_notion(
 # メイン処理
 # ──────────────────────────────────────────────
 def process_pdf_pages(notion: NotionAPI) -> tuple:
-    """執筆待ち(PDF) のページを処理して (成功件数, 処理済み記事リスト) を返す"""
+    """執筆待ち(pdf) のページを処理して (成功件数, 処理済み記事リスト) を返す"""
     logger.info("\n" + "="*50)
-    logger.info("  執筆待ち(PDF) の処理開始")
+    logger.info("  執筆待ち(pdf) の処理開始")
     logger.info("="*50)
-    pages = notion.query_pages("執筆待ち(PDF)")
+    pages = notion.query_pages("執筆待ち(pdf)")
     logger.info(f"{len(pages)} 件のページを検出")
     success = 0
     processed_articles: list = []
@@ -1089,7 +1089,7 @@ def process_pdf_pages(notion: NotionAPI) -> tuple:
             logger.info(f"  Article＆Script Title: {blog_title[:50]}")
 
         if notion.update_status(page_id, "ファクトチェック待ち"):
-            logger.info("  ✓ ステータス: 執筆待ち(PDF) → ファクトチェック待ち")
+            logger.info("  ✓ ステータス: 執筆待ち(pdf) → ファクトチェック待ち")
             success += 1
             _, blog_body = extract_title_from_markdown(blog)
             processed_articles.append({"title": title, "preview": blog_body[:150].strip()})
@@ -1102,11 +1102,11 @@ def process_pdf_pages(notion: NotionAPI) -> tuple:
 
 
 def process_url_pages(notion: NotionAPI) -> tuple:
-    """執筆待ち(URL) のページを処理して (成功件数, 処理済み記事リスト) を返す"""
+    """執筆待ち(url) のページを処理して (成功件数, 処理済み記事リスト) を返す"""
     logger.info("\n" + "="*50)
-    logger.info("  執筆待ち(URL) の処理開始")
+    logger.info("  執筆待ち(url) の処理開始")
     logger.info("="*50)
-    pages = notion.query_pages("執筆待ち(URL)")
+    pages = notion.query_pages("執筆待ち(url)")
     logger.info(f"{len(pages)} 件のページを検出")
     success = 0
     processed_articles: list = []
@@ -1150,7 +1150,7 @@ def process_url_pages(notion: NotionAPI) -> tuple:
             logger.info(f"  Article＆Script Title: {blog_title[:50]}")
 
         if notion.update_status(page_id, "ファクトチェック待ち"):
-            logger.info("  ✓ ステータス: 執筆待ち(URL) → ファクトチェック待ち")
+            logger.info("  ✓ ステータス: 執筆待ち(url) → ファクトチェック待ち")
             success += 1
             _, blog_body = extract_title_from_markdown(blog)
             processed_articles.append({"title": title, "preview": blog_body[:150].strip()})
