@@ -1,0 +1,70 @@
+name: 論文メタデータ自動処理 (StudyArticleDB)
+
+on:
+  # 毎日 JST 0:00 に実行（UTC 15:00）
+  schedule:
+    - cron: '0 15 * * *'
+
+  # GitHub Actions 画面から手動実行も可能
+  workflow_dispatch:
+
+concurrency:
+  group: study-paper-processor
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  process-papers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 依存パッケージをインストール
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 論文メタデータ処理を実行
+        env:
+          NOTION_API_KEY:    ${{ secrets.NOTION_API_KEY }}
+          STUDY_DATABASE_ID: ${{ secrets.STUDY_DATABASE_ID }}
+          GEMINI_API_KEY:    ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL:      ${{ secrets.GEMINI_MODEL }}
+        run: |
+          python src/study_paper_processor.py
+
+      - name: ログをアップロード（失敗時のみ）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: study-paper-error-log-${{ github.run_id }}
+          path: "*.log"
+          retention-days: 7
+
+      - name: 失敗通知メールを送信
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.GMAIL_ADDRESS }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "【エラー】論文メタデータ処理 失敗 - 要確認"
+          to: jump.deep.tree.inside@gmail.com
+          from: ${{ secrets.GMAIL_ADDRESS }}
+          body: |
+            StudyArticleDB の論文メタデータ処理に失敗しました。
+
+            ログを確認してください:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
