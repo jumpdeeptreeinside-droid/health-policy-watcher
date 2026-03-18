@@ -113,8 +113,7 @@ PROMPT_STUDY_ANALYSIS = """\
   "abstract_ja":  "アブストラクトの日本語訳（500字以内）",
   "summary_ja":   "薬局薬剤師・医療政策担当者向けの日本語要約（200〜400文字）",
   "keywords":     ["キーワード1", "キーワード2"],
-  "relevance":    3,
-  "title_ja":     "論文タイトルの日本語訳（タイトルが日本語の場合は原文をそのまま）"
+  "relevance":    3
 }}
 
 ## 関連度スコア基準（整数 1〜5）
@@ -489,10 +488,8 @@ def build_notion_payload(meta: dict, ai: Optional[dict]) -> dict:
     """メタデータと AI 結果を Notion の properties dict に変換"""
     props: dict = {}
 
-    # タイトル（英語の場合は日本語訳で上書き）
+    # タイトルは原文のまま保持
     title_str = meta.get("title", "")
-    if ai and ai.get("title_ja") and not re.search(r"[ぁ-んァ-ン一-龯]", title_str):
-        title_str = ai["title_ja"]
     if title_str:
         props["Title"] = {"title": [{"text": {"content": title_str[:2000]}}]}
 
