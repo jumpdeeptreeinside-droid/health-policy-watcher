@@ -195,12 +195,9 @@ def parse_zotero_csv(filepath: str) -> list[dict]:
         reader = csv.DictReader(f)
         for row in reader:
             item_type = _find_col(row, COL_ITEM_TYPE).lower()
-            # 書籍・ウェブページ等は除外し、論文系のみ対象
-            # （空の場合は含める）
-            if item_type and item_type not in (
-                "journal article", "conference paper", "preprint",
-                "report", "thesis", "book section", "book", ""
-            ):
+            # 論文系のみ対象（ウェブページ・フォーラム投稿等は除外）
+            EXCLUDED_TYPES = {"webpage", "forumpost", "blogpost", "email", "instantmessage"}
+            if item_type and item_type in EXCLUDED_TYPES:
                 continue
 
             title    = _find_col(row, COL_TITLE)
@@ -305,21 +302,22 @@ def bulk_import(csv_path: str) -> None:
     # 重複チェック用に既存URLを取得
     existing_urls = notion.fetch_all_urls()
 
-    # インポート対象を絞り込み
+    # インポート対象を絞り込み（DOI/URLなしも含めて全件）
     to_import = []
-    skip_no_url = 0
-    skip_dup    = 0
+    skip_dup  = 0
+    no_url    = 0
     for rec in records:
-        if not rec.get("doi_url"):
-            skip_no_url += 1
-            continue
-        if rec["doi_url"] in existing_urls:
-            skip_dup += 1
-            continue
+        # DOI/URLがある場合のみ重複チェック
+        if rec.get("doi_url"):
+            if rec["doi_url"] in existing_urls:
+                skip_dup += 1
+                continue
+        else:
+            no_url += 1
         to_import.append(rec)
 
     logger.info(f"インポート対象: {len(to_import)} 件")
-    logger.info(f"スキップ (DOI/URLなし): {skip_no_url} 件")
+    logger.info(f"  うち DOI/URLなし: {no_url} 件（メタデータのみ保存）")
     logger.info(f"スキップ (重複): {skip_dup} 件")
 
     if not to_import:
@@ -348,9 +346,8 @@ def bulk_import(csv_path: str) -> None:
 
     logger.info("\n" + "=" * 60)
     logger.info(f"  インポート完了: 成功 {success} 件 / 失敗 {fail} 件")
-    if skip_no_url:
-        logger.info(f"  DOI/URLなしでスキップ: {skip_no_url} 件")
-        logger.info("  ※ これらはNotionにDOI/URLを手動入力すれば自動処理されます")
+    logger.info(f"  ※ DOI/URLなし {no_url} 件はメタデータのみ保存しました")
+    logger.info(f"  ※ DOI/URLを後から入力するとAI要約が自動生成されます")
     logger.info("=" * 60)
 
 
