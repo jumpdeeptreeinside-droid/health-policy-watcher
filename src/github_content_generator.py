@@ -758,6 +758,20 @@ def scrape_article(url: str) -> dict:
 
     content = "\n\n".join(parts)
 
+    # article タグが画像ヘッダーのみで本文が空の場合（UN News等）、main タグでリトライ
+    if len(content) < 200:
+        main_el = soup.find("main")
+        if main_el and main_el not in candidates:
+            extra_parts: list[str] = []
+            for p in main_el.find_all(["p", "h1", "h2", "h3", "h4", "h5", "h6", "li"]):
+                t = p.get_text(strip=True)
+                if t and len(t) > 10:
+                    extra_parts.append(t)
+            main_content = "\n\n".join(extra_parts)
+            if len(main_content) > len(content):
+                content = main_content
+                logger.info(f"  main タグから本文を取得 ({len(content)}文字): {url}")
+
     # JSレンダリングSPAページ対策: 本文が短い場合は og:description にフォールバック
     if len(content) < 100:
         og_desc = (
