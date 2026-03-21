@@ -344,9 +344,7 @@ def generate_summary_and_quotes(
     議事録テキストから要約と引用を生成する。
     Returns: {"summary": str, "quotes": list[str]}
     """
-    # Gemini 2.0 Flash は大容量コンテキスト対応のため25,000文字まで渡す
-    truncated = text[:25000]
-    prompt = PROMPT_SUMMARY_QUOTES.format(title=title, text=truncated)
+    prompt = PROMPT_SUMMARY_QUOTES.format(title=title, text=text)
 
     try:
         from google.genai import types as genai_types
@@ -375,7 +373,7 @@ def generate_factcheck(
 ) -> str:
     """要約のファクトチェックレポートを生成する"""
     prompt = PROMPT_FACTCHECK.format(
-        text=text[:25000],
+        text=text,
         summary=summary,
     )
     try:
