@@ -89,6 +89,15 @@ HEADERS = {
 
 _PDF_DOMAINS = ("mhlw.go.jp", "mof.go.jp", "cao.go.jp")
 
+# 厚労省審議会ページ監視リスト
+# 将来追加する場合はここにエントリを追加するだけでOK
+MHLW_SHINGI_PAGES = [
+    {
+        "url":  "https://www.mhlw.go.jp/stf/shingi/shingi-chuo_128154.html",
+        "name": "中央社会保険医療協議会",
+    },
+]
+
 _SCORE_PROMPT = """\
 あなたは医療政策・ヘルスケア業界の専門アナリストです。
 以下のニュース記事タイトルリストを評価し、JSON形式で回答してください。
@@ -648,6 +657,84 @@ class NewsCollector:
 
         return articles
 
+    def fetch_mhlw_shingi_pages(self, limit: int = 30) -> List[NewsArticle]:
+        """
+        厚労省審議会ページ（MHLW_SHINGI_PAGES）の資料等・議事録リンクを取得。
+
+        各ページのテーブルを解析し、列位置で「資料等」「議事録」のリンクを抽出。
+        Notionの重複チェック（URL）で既存分は自動スキップされる。
+        """
+        logger.info("厚労省審議会ページ (shingi) を監視中...")
+        articles: List[NewsArticle] = []
+
+        for page_cfg in MHLW_SHINGI_PAGES:
+            page_url: str = page_cfg["url"]
+            name: str     = page_cfg["name"]
+            base_url = "https://www.mhlw.go.jp"
+
+            try:
+                resp = requests.get(page_url, headers=HEADERS, timeout=30)
+                resp.raise_for_status()
+                resp.encoding = resp.apparent_encoding
+                soup = BeautifulSoup(resp.text, "html.parser")
+
+                count = 0
+                for table in soup.find_all("table"):
+                    rows = table.find_all("tr")
+                    for row in rows:
+                        cells = row.find_all(["td", "th"])
+                        if len(cells) < 5:
+                            continue
+
+                        # 列構成: 0=回数 1=開催日 2=議題等 3=議事録 4=資料等 (5=開催案内)
+                        kai      = cells[0].get_text(strip=True)
+                        date_str = cells[1].get_text(strip=True)
+                        agenda   = cells[2].get_text(strip=True)[:60]
+
+                        # ヘッダ行スキップ
+                        if not kai or not date_str or kai in ("回数", "開催回"):
+                            continue
+
+                        # 資料等・議事録の列からリンクを取得
+                        col_map = {"議事録": cells[3], "資料等": cells[4]}
+                        for label, cell in col_map.items():
+                            link = cell.find("a", href=True)
+                            if not link:
+                                continue
+                            href = link["href"]
+                            if not href or href == "#":
+                                continue
+                            if href.startswith("http"):
+                                item_url = href
+                            else:
+                                item_url = base_url + href
+
+                            title = f"{name} {kai}（{agenda}）{label}（{date_str}）"
+                            articles.append(NewsArticle(
+                                title=title,
+                                url=item_url,
+                                source="MHLW",
+                                published_date=date_str,
+                            ))
+                            count += 1
+                            if count >= limit:
+                                break
+                        if count >= limit:
+                            break
+                    if count >= limit:
+                        break
+
+                logger.info(f"  {name}: {count} 件取得")
+                time.sleep(1)
+
+            except requests.exceptions.RequestException as e:
+                logger.error(f"❌ 審議会ページ取得エラー ({name}): {e}")
+            except Exception as e:
+                logger.error(f"❌ 審議会ページ解析エラー ({name}): {e}")
+
+        logger.info(f"✅ 厚労省審議会: {len(articles)} 件の記事を取得")
+        return articles
+
     def collect_all(self, limit_per_source: int = 20) -> List[NewsArticle]:
         """
         すべての情報源からニュースを収集
@@ -702,6 +789,11 @@ class NewsCollector:
         # WHO
         who_articles = self.fetch_who_news(limit=limit_per_source)
         all_articles.extend(who_articles)
+        time.sleep(1)
+
+        # 厚労省審議会ページ（資料等・議事録）
+        shingi_articles = self.fetch_mhlw_shingi_pages(limit=limit_per_source)
+        all_articles.extend(shingi_articles)
 
         logger.info("=" * 50)
         logger.info(f"合計 {len(all_articles)} 件の記事を収集しました")
