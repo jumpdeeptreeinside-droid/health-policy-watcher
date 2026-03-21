@@ -91,6 +91,9 @@ except ImportError:
 
 NOTIFY_TO_WP = "jump.deep.tree.inside@gmail.com"
 
+# アイキャッチ画像（WordPress メディアライブラリ内の URL）
+FEATURED_IMAGE_URL = "https://tekutekuradio.com/wp-content/uploads/2025/10/名称_未_設定-12.png"
+
 
 def send_wordpress_notification(uploaded_articles: list) -> None:
     """WordPress投稿完了の通知メールを送信する"""
@@ -565,6 +568,27 @@ class NotionWordPressUploader:
                 continue
         return False
 
+    def _get_featured_media_id(self, image_url: str) -> Optional[int]:
+        """WordPress メディアライブラリから URL に一致するメディア ID を返す"""
+        media_api = self.wp_api_url.replace("/posts", "/media")
+        filename = image_url.split("/")[-1]
+        try:
+            resp = requests.get(
+                media_api,
+                params={"search": filename, "per_page": 20},
+                auth=self.wp_auth,
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                for item in resp.json():
+                    if item.get("source_url") == image_url:
+                        logger.info(f"  アイキャッチ画像 ID: {item['id']} ({image_url})")
+                        return item["id"]
+            logger.warning(f"  アイキャッチ画像が見つかりません: {image_url}")
+        except Exception as e:
+            logger.warning(f"  メディア検索エラー: {e}")
+        return None
+
     def _find_existing_post(self, title: str) -> Optional[int]:
         """
         同タイトルの投稿が WordPress に存在するか確認し、
@@ -741,6 +765,11 @@ class NotionWordPressUploader:
             )
             return 0
         logger.info(f"WordPress API URL: {self.wp_api_url}")
+
+        # アイキャッチ画像IDを取得（URLからメディアライブラリを検索）
+        global DEFAULT_FEATURED_IMAGE_ID
+        if not DEFAULT_FEATURED_IMAGE_ID:
+            DEFAULT_FEATURED_IMAGE_ID = self._get_featured_media_id(FEATURED_IMAGE_URL)
 
         # 次の JST 18:00 に予約投稿するための UTC 時刻を計算
         scheduled_time_utc = self._next_schedule_jst()
