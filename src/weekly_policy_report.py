@@ -621,12 +621,9 @@ def format_weekly_report(articles_data: list[dict], today: datetime) -> str:
     n = len(articles_data)
 
     lines: list[str] = [
-        "# 医療政策ウォッチャーズ 医療政策ウィークリーレポート",
-        f"**期間：** {period_start}〜 {period_end}",
-        f"**配信：** {delivery_date}",
-        f"**記事数：** {n}本",
+        f"【{delivery_date}】医療政策ウォッチャーズ 医療政策ウィークリーレポート",
         "",
-        "---",
+        f"期間： {period_start}〜 {period_end}配信： {delivery_date}記事数： {n}本",
         "",
     ]
 
@@ -635,7 +632,7 @@ def format_weekly_report(articles_data: list[dict], today: datetime) -> str:
         title      = art["title"]
         source_tag = art["source_tag"]
         pub_date   = art.get("pub_date", "")
-        url        = art["url"]
+        web_url    = art.get("web_url", "")
         summary    = art.get("summary") or "（要約生成失敗）"
         topic_tags = art.get("topic_tags") or []
         extra_tag  = art.get("extra_tag")
@@ -651,15 +648,16 @@ def format_weekly_report(articles_data: list[dict], today: datetime) -> str:
         tags_str = " ".join(all_tags)
 
         lines += [
-            f"{num} [{title}]({url})（{meta_str}）",
-            f"\u3000{summary}",
-            f"\u3000{tags_str}",
+            f"## {num} {title}（{meta_str}）",
+            "",
+            f"{summary}{tags_str}",
             "",
         ]
+        if web_url:
+            lines += [f"▶ 解説記事はこちら→ {web_url}", ""]
 
     lines += [
-        "---",
-        "*本レポートは自動生成されています。原文は各リンクよりご確認ください。*",
+        "原文は各リンクよりご確認ください。",
     ]
 
     return "\n".join(lines)
@@ -773,6 +771,7 @@ def main() -> None:
         page_id     = page["id"]
         title       = notion.get_property(page, "Title") or "タイトルなし"
         source_url  = notion.get_property(page, "URL(Source)") or ""
+        web_url     = notion.get_property(page, "URL(Web)") or ""
         article_web = notion.get_property(page, "Article(Web)") or ""
         pub_date    = notion.get_property(page, "Date(Search)") or ""
 
@@ -831,6 +830,7 @@ def main() -> None:
         articles_data.append({
             "title":      title,
             "url":        source_url,
+            "web_url":    web_url,
             "pub_date":   pub_date,
             "source_tag": source_tag,
             "summary":    summary,
