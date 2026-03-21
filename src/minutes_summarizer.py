@@ -26,6 +26,7 @@ import smtplib
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -37,7 +38,8 @@ from bs4 import BeautifulSoup
 # ──────────────────────────────────────────────
 # 定数
 # ──────────────────────────────────────────────
-JST      = timezone(timedelta(hours=9))
+JST        = timezone(timedelta(hours=9))
+OUTPUT_DIR = Path(__file__).parent.parent / "output" / "minutes_summaries"
 HEADERS  = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -438,6 +440,16 @@ def format_report(
 # ──────────────────────────────────────────────
 # メール送信
 # ──────────────────────────────────────────────
+def save_report(content: str, today: datetime) -> Path:
+    """レポートを .md ファイルとして保存しパスを返す"""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    date_str = today.strftime("%Y%m%d")
+    md_path  = OUTPUT_DIR / f"{date_str}_minutes_summary.md"
+    md_path.write_text(content, encoding="utf-8")
+    logger.info(f"  保存完了: {md_path}")
+    return md_path
+
+
 def send_email(
     reports: list[dict],
     gmail_address: str,
@@ -447,22 +459,41 @@ def send_email(
         logger.warning("  Gmail 設定未完了のためメール送信スキップ")
         return
 
-    today = datetime.now(JST).strftime("%Y年%m月%d日")
-    count = len(reports)
-    subject = f"【議事録要約】{today}（{count}件）"
+    today     = datetime.now(JST)
+    today_str = today.strftime("%Y年%m月%d日")
+    count     = len(reports)
+    subject   = f"【議事録要約】{today_str}（{count}件）"
 
-    # 複数件ある場合は1通にまとめる
+    # 複数件ある場合は1つの .md ファイルにまとめる
     body_parts: list[str] = []
     for r in reports:
         body_parts.append(r["content"])
         body_parts.append("\n\n" + "=" * 60 + "\n\n")
-    body = "".join(body_parts).rstrip("= \n")
+    full_content = "".join(body_parts).rstrip("= \n")
 
-    msg = MIMEMultipart()
+    # .md ファイルに保存
+    md_path = save_report(full_content, today)
+
+    body = (
+        f"議事録要約レポートが自動生成されました。\n\n"
+        f"■ 生成日時: {today_str}\n"
+        f"■ 件数: {count}件\n\n"
+        f"レポート本文は添付の .md ファイルをご確認ください。"
+    )
+
+    msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"]    = gmail_address
     msg["To"]      = NOTIFY_TO
     msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    # .md ファイルを添付
+    try:
+        attachment = MIMEApplication(md_path.read_bytes(), Name=md_path.name)
+        attachment["Content-Disposition"] = f'attachment; filename="{md_path.name}"'
+        msg.attach(attachment)
+    except Exception as e:
+        logger.warning(f"  添付ファイル読み込み失敗（本文のみ送信）: {e}")
 
     try:
         with smtplib.SMTP("smtp.gmail.com", 587) as srv:
