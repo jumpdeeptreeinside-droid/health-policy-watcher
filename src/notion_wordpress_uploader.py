@@ -527,6 +527,31 @@ class NotionWordPressUploader:
             logger.warning(f"  ⚠️  URL(Web) 更新エラー: {e}")
             return False
 
+    def update_podcast_description(self, page_id: str, web_url: str) -> bool:
+        """Notion ページの PodcastDescription プロパティを更新する"""
+        text = (
+            f"引用元・解説記事\n▶️{web_url}\n"
+            "メインパーソナリティ「盤条サク」とは\n"
+            "▶️https://note.com/ski_sph/n/n094276c4eb39\n"
+            "「医療政策ウォッチャー」とは\n"
+            "▶️https://note.com/ski_sph/n/nc3557f4b055f"
+        )
+        api_url = f"{self.notion_base}/pages/{page_id}"
+        payload = {
+            "properties": {
+                "PodcastDescription": {
+                    "rich_text": [{"type": "text", "text": {"content": text}}]
+                }
+            }
+        }
+        try:
+            resp = requests.patch(api_url, headers=self.notion_headers, json=payload, timeout=30)
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            logger.warning(f"  ⚠️  PodcastDescription 更新エラー: {e}")
+            return False
+
     def update_notion_status(self, page_id: str, status_name: str) -> bool:
         """Notion ページの Status(Web) を指定値に更新する"""
         url = f"{self.notion_base}/pages/{page_id}"
@@ -845,6 +870,12 @@ class NotionWordPressUploader:
                     logger.info(f"  ✅ Notion URL(Web) 更新: {post_link}")
                 else:
                     logger.warning("  ⚠️  URL(Web) の更新に失敗しました")
+
+                # ── Notion の PodcastDescription を更新
+                if post_link and self.update_podcast_description(page_id, post_link):
+                    logger.info("  ✅ Notion PodcastDescription 更新完了")
+                else:
+                    logger.warning("  ⚠️  PodcastDescription の更新に失敗しました")
 
                 # ── Notion ステータスを「完了」に更新
                 if self.update_notion_status(page_id, "完了"):
