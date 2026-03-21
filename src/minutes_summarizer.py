@@ -289,7 +289,7 @@ class NotionAPI:
 def scrape_minutes_text(url: str) -> str:
     """
     議事録URLからテキストを取得する。
-    厚労省の議事録ページは本文がHTMLに直接埋め込まれている。
+    厚労省の議事録ページはテキストノード中心の構成のため get_text() で全文取得する。
     """
     try:
         resp = requests.get(url, headers=HEADERS, timeout=30)
@@ -301,24 +301,22 @@ def scrape_minutes_text(url: str) -> str:
         for tag in soup(["script", "style", "nav", "header", "footer", "noscript"]):
             tag.decompose()
 
-        # メインコンテンツ候補を優先的に探す
-        main = (
-            soup.find("div", id="main")
-            or soup.find("div", class_=re.compile(r"main|content|body", re.I))
-            or soup.find("main")
-            or soup.find("article")
-            or soup.body
-        )
-        if not main:
-            main = soup
+        # get_text() で全テキストを取得し、空行を整理
+        raw = soup.get_text(separator="\n")
+        lines = [ln.strip() for ln in raw.splitlines()]
+        # 空行の連続を1行に圧縮し、短すぎる行を除去
+        cleaned: list[str] = []
+        prev_blank = False
+        for ln in lines:
+            if not ln:
+                if not prev_blank:
+                    cleaned.append("")
+                prev_blank = True
+            else:
+                cleaned.append(ln)
+                prev_blank = False
 
-        lines: list[str] = []
-        for elem in main.find_all(["p", "li", "h1", "h2", "h3", "h4", "td"]):
-            text = elem.get_text(separator=" ", strip=True)
-            if text and len(text) > 10:
-                lines.append(text)
-
-        text = "\n\n".join(lines)
+        text = "\n".join(cleaned).strip()
         logger.info(f"  スクレイピング完了: {len(text)} 文字")
         return text
 
