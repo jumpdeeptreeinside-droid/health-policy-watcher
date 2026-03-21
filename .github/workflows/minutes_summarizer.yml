@@ -1,0 +1,70 @@
+name: 議事録要約自動生成 (Minutes Summarizer)
+
+on:
+  # 毎週月曜日 8:00 JST (日曜 23:00 UTC) に実行
+  schedule:
+    - cron: '0 23 * * 0'
+
+  # GitHub Actions 画面から手動実行も可能
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  summarize-minutes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── 1. リポジトリをチェックアウト ──────────────────────
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      # ── 2. Python 環境のセットアップ ───────────────────────
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. 依存パッケージのインストール ────────────────────
+      - name: 依存パッケージをインストール
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 4. 議事録要約スクリプトを実行 ───────────────────────
+      - name: 議事録要約を生成・メール送信
+        env:
+          NOTION_API_KEY:     ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL:       ${{ secrets.GEMINI_MODEL }}
+          GMAIL_ADDRESS:      ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          python src/minutes_summarizer.py
+
+      # ── 5. 失敗時の通知メール ──────────────────────────────
+      - name: 失敗通知メールを送信
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.GMAIL_ADDRESS }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "【議事録要約】GitHub Actions 実行失敗 - 要確認"
+          to: jump.deep.tree.inside@gmail.com
+          from: ${{ secrets.GMAIL_ADDRESS }}
+          body: |
+            議事録要約の自動生成に失敗しました。
+
+            GitHub Actions のログを確認してください:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            よくある原因:
+            - Status(議事録)="要約待ち" のページが 0 件
+            - Notion API や Gemini API のエラー
+            - スクレイピング失敗（対象サイトがブロック）
