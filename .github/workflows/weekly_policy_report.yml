@@ -1,9 +1,10 @@
 name: 医療政策ウィークリーレポート自動生成
 
 on:
-  # 毎週土曜日 8:00 JST (金曜 23:00 UTC)
+
+  # 毎週土曜日 深夜0時 JST (UTC 金曜 15:00) に実行
   schedule:
-    - cron: '0 21 * * 5'
+    - cron: '0 15 * * 5'
 
   # GitHub Actions 画面から手動実行も可能
   workflow_dispatch:
