@@ -755,8 +755,9 @@ def main() -> None:
     today  = datetime.now(JST)
 
     # ── 1. Notion から記事取得 ─────────────────────────────
-    logger.info("\n[1] Notion から完了記事を取得中（直近7日間）...")
-    pages = notion.query_completed_articles(days=7)
+    lookup_days = int(os.environ.get("WEEKLY_REPORT_DAYS", "7"))
+    logger.info(f"\n[1] Notion から完了記事を取得中（直近{lookup_days}日間）...")
+    pages = notion.query_completed_articles(days=lookup_days)
     logger.info(f"  {len(pages)} 件取得")
 
     if not pages:

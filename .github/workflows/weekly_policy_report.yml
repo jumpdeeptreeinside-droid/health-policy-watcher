@@ -1,13 +1,17 @@
 name: 医療政策ウィークリーレポート自動生成
 
 on:
-
   # 毎週土曜日 深夜0時 JST (UTC 金曜 15:00) に実行
   schedule:
     - cron: '0 15 * * 5'
 
   # GitHub Actions 画面から手動実行も可能
   workflow_dispatch:
+    inputs:
+      lookup_days:
+        description: '記事取得の日数（デフォルト7日）'
+        required: false
+        default: '7'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -45,6 +49,7 @@ jobs:
           GEMINI_MODEL:       ${{ secrets.GEMINI_MODEL }}
           GMAIL_ADDRESS:      ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          WEEKLY_REPORT_DAYS: ${{ github.event.inputs.lookup_days || '7' }}
         run: |
           python src/weekly_policy_report.py
 
