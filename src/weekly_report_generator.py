@@ -587,15 +587,15 @@ class NotionAPI:
             return False
 
     def query_this_week_articles(self, days: int = 7) -> list[dict]:
-        """直近 days 日間に Date(Search) が設定された記事を取得する（ニュース全リスト用）"""
+        """直近 days 日間に Date(Web) が設定された記事を取得する（実際の公開日基準）"""
         from datetime import timedelta
         since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
         payload = {
             "filter": {
-                "property": "Date(Search)",
+                "property": "Date(Web)",
                 "date": {"on_or_after": since},
             },
-            "sorts": [{"property": "Date(Search)", "direction": "descending"}],
+            "sorts": [{"property": "Date(Web)", "direction": "descending"}],
         }
         try:
             return self._post(f"/databases/{self.database_id}/query", payload).get("results", [])

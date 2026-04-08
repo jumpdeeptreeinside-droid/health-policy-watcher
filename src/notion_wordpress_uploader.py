@@ -877,7 +877,7 @@ class NotionWordPressUploader:
                 else:
                     logger.warning("  ⚠️  PodcastDescription の更新に失敗しました")
 
-                # ── Notion ステータスを「完了」に更新
+                # ── Notion ステータスを「完了」に更新 + Date(Web) を記録
                 if self.update_notion_status(page_id, "完了"):
                     logger.info(
                         f"  ✅ Notion ステータス更新: 投稿待ち → 完了"
@@ -887,6 +887,25 @@ class NotionWordPressUploader:
                         "  ⚠️  WordPress 投稿は成功しましたが、"
                         "Notion ステータスの更新に失敗しました"
                     )
+
+                # ── Date(Web) に投稿日を記録
+                today = datetime.now(_JST).strftime('%Y-%m-%d')
+                date_web_payload = {
+                    "properties": {
+                        "Date(Web)": {"date": {"start": today}}
+                    }
+                }
+                try:
+                    resp = requests.patch(
+                        f"{self.notion_base}/pages/{page_id}",
+                        headers=self.notion_headers,
+                        json=date_web_payload,
+                        timeout=30,
+                    )
+                    resp.raise_for_status()
+                    logger.info(f"  ✅ Date(Web) 記録: {today}")
+                except Exception as e:
+                    logger.warning(f"  ⚠️  Date(Web) 記録失敗: {e}")
                 success_count += 1
                 uploaded_articles.append({"title": title, "scheduled": scheduled_time_jst})
             else:
