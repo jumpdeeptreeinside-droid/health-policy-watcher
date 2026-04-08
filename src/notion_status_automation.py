@@ -206,12 +206,20 @@ class NotionAutomation:
         """
         logger.info("Status(コンテンツ作成)が「完了」のページを検索中...")
 
-        # フィルター: Status(コンテンツ作成) = "完了"
+        # フィルター: Status(コンテンツ作成) = "完了" かつ Web or Podcast が未処理
         filter_conditions = {
-            "property": "Status(コンテンツ作成)",
-            "status": {
-                "equals": "完了"
-            }
+            "and": [
+                {
+                    "property": "Status(コンテンツ作成)",
+                    "status": {"equals": "完了"}
+                },
+                {
+                    "or": [
+                        {"property": "Status(Web)", "status": {"equals": "-"}},
+                        {"property": "Status(Podcast)", "status": {"equals": "-"}}
+                    ]
+                }
+            ]
         }
         
         pages = self.query_database(filter_conditions)
