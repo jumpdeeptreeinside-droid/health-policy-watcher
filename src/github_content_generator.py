@@ -15,6 +15,7 @@ GitHub Actions用 コンテンツ自動生成スクリプト
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -288,7 +289,7 @@ PROMPT_SCRIPT = """
 5. **個人名や配信者名（VTuber等）は絶対に出力しないでください。**
 
 上記のルールに厳密に従って、Podcast台本を作成してください。
-"""
+""" + _PODCAST_DICT_PROMPT
 
 # Podcast台本 → ファクトチェックプロンプト
 PROMPT_FACTCHECK = """
@@ -327,6 +328,88 @@ PROMPT_FACTCHECK = """
 - 問題がない場合は「問題なし」と明記
 - マークダウン形式で出力
 """
+
+# ファクトチェック修正プロンプト
+PROMPT_FIX_BLOG = """\
+# タスク
+以下のファクトチェックレポートで指摘された問題点を修正し、ブログ記事の改訂版を出力してください。
+
+## ルール
+1. ファクトチェックで指摘された箇所のみ修正する
+2. 指摘されていない箇所は変更しない
+3. 元記事（原文）の事実関係に基づいて正確に修正する
+4. 記事の構成・文体・トーンはそのまま維持する
+5. 前置きや説明は不要。修正済みの記事全文のみをマークダウン形式で出力する
+
+## ファクトチェックレポート
+
+{factcheck}
+
+## 修正対象のブログ記事
+
+{blog}
+"""
+
+MAX_FACTCHECK_RETRIES = 2  # ファクトチェック修正の最大リトライ回数
+
+
+def parse_factcheck_needs_fix(factcheck_text: str) -> bool:
+    """ファクトチェック結果を解析して修正が必要かどうかを返す"""
+    if not factcheck_text:
+        return False
+
+    # 総合評価セクションを探す
+    match = re.search(r'###?\s*総合評価\s*\n+(.+)', factcheck_text)
+    if match:
+        verdict_line = match.group(1).strip()
+        if '問題なし' in verdict_line:
+            return False
+        if '要修正' in verdict_line or '軽微な問題' in verdict_line or '要確認' in verdict_line:
+            return True
+
+    # 要確認・修正箇所セクションを探す
+    match = re.search(r'###?\s*要確認・修正箇所\s*\n+([\s\S]*?)(?=\n###|\Z)', factcheck_text)
+    if match:
+        content = match.group(1).strip()
+        if content == 'なし' or content == '':
+            return False
+        # テーブルや具体的指摘があれば修正が必要
+        if '|' in content or '⚠' in content or '❌' in content:
+            return True
+
+    return False
+
+
+def _load_podcast_dict() -> str:
+    """読み間違い防止辞書をプロンプト用文字列として読み込む"""
+    dict_path = Path(__file__).parent / "podcast_dictionary.json"
+    if not dict_path.exists():
+        return ""
+    try:
+        data = json.load(open(dict_path, "r", encoding="utf-8"))
+        lines = [f"- {d['sur']} → {d['pron']}" for d in data]
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+# モジュール読み込み時に辞書を構築
+_PODCAST_DICT_PROMPT = ""
+_dict_str = _load_podcast_dict()
+if _dict_str:
+    _PODCAST_DICT_PROMPT = f"""
+
+### 読み間違い防止（重要）
+以下は音声読み上げソフト（VOICEVOX）で読み間違いが多い単語の辞書です。
+台本にこれらの単語が含まれる場合、読み間違いを防ぐために以下のいずれかの対応をしてください：
+- 漢字をひらがな・カタカナに置き換える（例：「十分な」→「じゅうぶんな」）
+- 括弧内にふりがなを追加する（例：「口腔（こうくう）内」）
+- 英字略語は日本語読みを括弧で補足する（例：「WHO（ダブリューエイチオー）」）
+
+{_dict_str}
+"""
+    logger.info(f"読み間違い防止辞書: {len(_dict_str.splitlines())} 語を読み込み")
+
 
 # ──────────────────────────────────────────────
 # Markdown → Notion ブロック変換
@@ -858,6 +941,7 @@ def generate_from_pdfs(
     )
 
     try:
+        # ── 第1段階: ブログ記事生成 ──────────────────
         logger.info("  [第1段階] ブログ記事を生成中...")
         blog_resp = client.models.generate_content(
             model=GEMINI_MODEL,
@@ -867,9 +951,49 @@ def generate_from_pdfs(
         blog_content = blog_resp.text.strip()
         logger.info(f"  ブログ記事生成完了 ({len(blog_content)} 文字)")
 
-        time.sleep(2)
+        # ── 第2段階: ファクトチェック（修正リトライ付き）──
+        factcheck_content = ""
+        for attempt in range(MAX_FACTCHECK_RETRIES + 1):
+            time.sleep(2)
+            logger.info(f"  [第2段階] ファクトチェックを実行中... (試行 {attempt + 1}/{MAX_FACTCHECK_RETRIES + 1})")
+            factcheck_prompt = (
+                f"{PROMPT_FACTCHECK}\n\n"
+                f"# 元記事（PDF原文）\n（添付PDFを参照）\n\n"
+                f"# 生成されたブログ記事\n{blog_content}"
+            )
+            factcheck_resp = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=uploaded + [factcheck_prompt],
+                config=genai_types.GenerateContentConfig(temperature=0.2),
+            )
+            factcheck_content = factcheck_resp.text.strip()
+            logger.info(f"  ファクトチェック完了 ({len(factcheck_content)} 文字)")
 
-        logger.info("  [第2段階] Podcast 台本を生成中...")
+            needs_fix = parse_factcheck_needs_fix(factcheck_content)
+            if not needs_fix:
+                logger.info("  ✓ ファクトチェック: 問題なし")
+                break
+
+            if attempt < MAX_FACTCHECK_RETRIES:
+                logger.info(f"  ⚠ ファクトチェックで問題検出。ブログ記事を修正中... (修正 {attempt + 1}/{MAX_FACTCHECK_RETRIES})")
+                time.sleep(2)
+                fix_prompt = PROMPT_FIX_BLOG.format(
+                    factcheck=factcheck_content,
+                    blog=blog_content,
+                )
+                fix_resp = client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=uploaded + [fix_prompt],
+                    config=genai_types.GenerateContentConfig(temperature=0.3),
+                )
+                blog_content = fix_resp.text.strip()
+                logger.info(f"  ブログ記事修正完了 ({len(blog_content)} 文字)")
+            else:
+                logger.warning("  ⚠ 最大リトライ回数に到達。現在の記事で続行します。")
+
+        # ── 第3段階: Podcast台本生成（ファクトチェック通過後）──
+        time.sleep(2)
+        logger.info("  [第3段階] Podcast 台本を生成中...")
         script_resp = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=[blog_content, PROMPT_SCRIPT],
@@ -877,22 +1001,6 @@ def generate_from_pdfs(
         )
         script_content = script_resp.text.strip()
         logger.info(f"  Podcast 台本生成完了 ({len(script_content)} 文字)")
-
-        time.sleep(2)
-
-        logger.info("  [第3段階] ファクトチェックを実行中...")
-        factcheck_prompt = (
-            f"{PROMPT_FACTCHECK}\n\n"
-            f"# 元記事（PDF原文）\n（添付PDFを参照）\n\n"
-            f"# 生成されたブログ記事\n{blog_content}"
-        )
-        factcheck_resp = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=uploaded + [factcheck_prompt],
-            config=genai_types.GenerateContentConfig(temperature=0.2),
-        )
-        factcheck_content = factcheck_resp.text.strip()
-        logger.info(f"  ファクトチェック完了 ({len(factcheck_content)} 文字)")
 
     except Exception as e:
         logger.error(f"  Gemini 生成エラー: {e}")
@@ -926,6 +1034,7 @@ def generate_from_url(url: str) -> tuple[Optional[str], Optional[str], Optional[
     )
 
     try:
+        # ── 第1段階: ブログ記事生成 ──────────────────
         logger.info("  [第1段階] ブログ記事を生成中...")
         blog_resp = client.models.generate_content(
             model=GEMINI_MODEL,
@@ -935,9 +1044,52 @@ def generate_from_url(url: str) -> tuple[Optional[str], Optional[str], Optional[
         blog_content = blog_resp.text.strip()
         logger.info(f"  ブログ記事生成完了 ({len(blog_content)} 文字)")
 
-        time.sleep(2)
+        # ── 第2段階: ファクトチェック（修正リトライ付き）──
+        factcheck_content = ""
+        for attempt in range(MAX_FACTCHECK_RETRIES + 1):
+            time.sleep(2)
+            logger.info(f"  [第2段階] ファクトチェックを実行中... (試行 {attempt + 1}/{MAX_FACTCHECK_RETRIES + 1})")
+            factcheck_prompt = (
+                f"{PROMPT_FACTCHECK}\n\n"
+                f"# 元記事\n{article_text}\n\n"
+                f"# 生成されたブログ記事\n{blog_content}"
+            )
+            factcheck_resp = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[factcheck_prompt],
+                config=genai_types.GenerateContentConfig(temperature=0.2),
+            )
+            factcheck_content = factcheck_resp.text.strip()
+            logger.info(f"  ファクトチェック完了 ({len(factcheck_content)} 文字)")
 
-        logger.info("  [第2段階] Podcast 台本を生成中...")
+            needs_fix = parse_factcheck_needs_fix(factcheck_content)
+            if not needs_fix:
+                logger.info("  ✓ ファクトチェック: 問題なし")
+                break
+
+            if attempt < MAX_FACTCHECK_RETRIES:
+                logger.info(f"  ⚠ ファクトチェックで問題検出。ブログ記事を修正中... (修正 {attempt + 1}/{MAX_FACTCHECK_RETRIES})")
+                time.sleep(2)
+                fix_prompt = (
+                    PROMPT_FIX_BLOG.format(
+                        factcheck=factcheck_content,
+                        blog=blog_content,
+                    )
+                    + f"\n\n## 元記事（参照用）\n\n{article_text[:10000]}"
+                )
+                fix_resp = client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=[fix_prompt],
+                    config=genai_types.GenerateContentConfig(temperature=0.3),
+                )
+                blog_content = fix_resp.text.strip()
+                logger.info(f"  ブログ記事修正完了 ({len(blog_content)} 文字)")
+            else:
+                logger.warning("  ⚠ 最大リトライ回数に到達。現在の記事で続行します。")
+
+        # ── 第3段階: Podcast台本生成（ファクトチェック通過後）──
+        time.sleep(2)
+        logger.info("  [第3段階] Podcast 台本を生成中...")
         script_resp = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=[blog_content, PROMPT_SCRIPT],
@@ -945,22 +1097,6 @@ def generate_from_url(url: str) -> tuple[Optional[str], Optional[str], Optional[
         )
         script_content = script_resp.text.strip()
         logger.info(f"  Podcast 台本生成完了 ({len(script_content)} 文字)")
-
-        time.sleep(2)
-
-        logger.info("  [第3段階] ファクトチェックを実行中...")
-        factcheck_prompt = (
-            f"{PROMPT_FACTCHECK}\n\n"
-            f"# 元記事\n{article_text}\n\n"
-            f"# 生成されたブログ記事\n{blog_content}"
-        )
-        factcheck_resp = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[factcheck_prompt],
-            config=genai_types.GenerateContentConfig(temperature=0.2),
-        )
-        factcheck_content = factcheck_resp.text.strip()
-        logger.info(f"  ファクトチェック完了 ({len(factcheck_content)} 文字)")
 
     except Exception as e:
         logger.error(f"  Gemini 生成エラー: {e}")
