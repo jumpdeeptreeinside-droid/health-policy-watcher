@@ -253,12 +253,12 @@ class NotionAPI:
                         "status":   {"equals": "完了"},
                     },
                     {
-                        "property": "Date(Search)",
+                        "property": "Date(Web)",
                         "date":     {"on_or_after": since},
                     },
                 ]
             },
-            "sorts": [{"property": "Date(Search)", "direction": "ascending"}],
+            "sorts": [{"property": "Date(Web)", "direction": "ascending"}],
         }
         try:
             results: list[dict] = []
@@ -774,7 +774,7 @@ def main() -> None:
         source_url  = notion.get_property(page, "URL(Source)") or ""
         web_url     = notion.get_property(page, "URL(Web)") or ""
         article_web = notion.get_property(page, "Article(Web)") or ""
-        pub_date    = notion.get_property(page, "Date(Search)") or ""
+        pub_date    = notion.get_property(page, "Date(Web)") or ""
 
         logger.info(f"\n  [{i}/{len(pages)}] {title[:60]}")
 
