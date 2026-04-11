@@ -6,11 +6,10 @@
 機能:
   1. Notion DB から Status(議事録)="要約待ち" のページを取得
   2. URL(Source) から議事録HTMLをスクレイピング
-  3. Gemini API で3,000文字の構造化要約を生成
-  4. 主要な引用を原文から抽出
-  5. ファクトチェックレポートを生成
-  6. Markdownレポートをメールで送信
-  7. Status(議事録) を "完了" に更新
+  3. Gemini API で2,000文字の構造化要約を生成
+  4. ファクトチェックレポートを生成
+  5. Markdownレポートをメールで送信
+  6. Status(議事録) を "完了" に更新
 
 使用方法:
   python src/minutes_summarizer.py
@@ -110,7 +109,7 @@ def _load_config() -> tuple[str, str, str, str, str, str]:
 # ──────────────────────────────────────────────
 # プロンプト定義
 # ──────────────────────────────────────────────
-PROMPT_SUMMARY_QUOTES = """\
+PROMPT_SUMMARY = """\
 あなたは医療政策の専門的な編集者です。
 
 ## 絶対に守るルール（最重要）
@@ -121,31 +120,23 @@ PROMPT_SUMMARY_QUOTES = """\
 - 不確かな場合は書かない。「〜と考えられる」「〜の可能性がある」も使わない
 
 ## タスク
-以下の審議会議事録テキストを読み、構造化された要約と主要引用を JSON 形式で出力してください。
+以下の審議会議事録テキストを読み、構造化された要約を JSON 形式で出力してください。
 
 ### 要約ルール
-- 合計3,000文字程度（±200文字）
+- 合計2,000文字程度（±200文字）
 - 以下の構成で Markdown 形式で作成:
-  - `## 会議概要` ── テキストに記載された日時・参加者・議題（200文字程度）
+  - `## 会議概要` ── テキストに記載された日時・参加者・議題（150文字程度）
   - `## 議題① ○○について` ── 各議題の要点（議題数に応じて配分）
-    - テキストに記載された議論の内容
+    - テキストに記載された議論の核心を簡潔に
     - テキストに記載された各立場の主な主張（診療側・支払側など）
     - テキストに記載された決定事項・結論
-  - `## 今回のポイント` ── テキストから読み取れる注目点（300文字程度）
+  - `## 今回のポイント` ── テキストから読み取れる注目点（200文字程度）
 - 客観的・中立的なトーン
-
-### 引用ルール
-- テキスト中に実際に存在する発言を3〜5件、一字一句正確に引用する
-- 発言者名もテキストに記載されているものだけを使う
-- 形式: 「発言内容」（発言者名）
+- 冗長な表現を避け、簡潔にまとめる
 
 ## 出力形式（JSONのみ・前置き不要）
 {{
-  "summary": "## 会議概要\\n...",
-  "quotes": [
-    "「発言内容」（発言者名）",
-    "「発言内容」（発言者名）"
-  ]
+  "summary": "## 会議概要\\n..."
 }}
 
 ## 議事録本文
@@ -336,17 +327,17 @@ def scrape_minutes_text(url: str) -> str:
 # ──────────────────────────────────────────────
 # Gemini 処理
 # ──────────────────────────────────────────────
-def generate_summary_and_quotes(
+def generate_summary(
     title: str,
     text: str,
     gemini_client,
     model: str,
 ) -> dict:
     """
-    議事録テキストから要約と引用を生成する。
-    Returns: {"summary": str, "quotes": list[str]}
+    議事録テキストから要約を生成する。
+    Returns: {"summary": str}
     """
-    prompt = PROMPT_SUMMARY_QUOTES.format(title=title, text=text)
+    prompt = PROMPT_SUMMARY.format(title=title, text=text)
 
     try:
         from google.genai import types as genai_types
@@ -399,7 +390,6 @@ def format_report(
     source_url: str,
     pub_date: str,
     summary: str,
-    quotes: list[str],
     factcheck_md: str,
 ) -> str:
     today = datetime.now(JST).strftime("%Y年%m月%d日")
@@ -412,17 +402,6 @@ def format_report(
         summary,
         "",
     ]
-
-    # 引用セクション（文字数外）
-    if quotes:
-        lines += [
-            "---",
-            "",
-            "## 引用",
-            "",
-        ]
-        for q in quotes:
-            lines += [f"> {q}", ""]
 
     # ファクトチェックセクション（文字数外）
     lines += ["---", ""]
@@ -559,19 +538,18 @@ def main() -> None:
             logger.warning("  テキスト取得失敗のためスキップ")
             continue
 
-        # ── [Step 1] 要約 + 引用生成 ──────────────────────
-        logger.info("  [Step 1] 要約・引用生成中...")
-        result = generate_summary_and_quotes(title, text, gemini_client, gemini_model)
+        # ── [Step 1] 要約生成 ─────────────────────────────
+        logger.info("  [Step 1] 要約生成中...")
+        result = generate_summary(title, text, gemini_client, gemini_model)
         time.sleep(2)
 
         summary = result.get("summary", "")
-        quotes  = result.get("quotes", [])
 
         if not summary:
             logger.warning("  要約生成失敗。スキップします。")
             continue
 
-        logger.info(f"  要約: {len(summary)} 文字 / 引用: {len(quotes)} 件")
+        logger.info(f"  要約: {len(summary)} 文字")
 
         # ── [Step 2] ファクトチェック ─────────────────────
         logger.info("  [Step 2] ファクトチェック中...")
@@ -581,7 +559,7 @@ def main() -> None:
         # ── レポート整形 ───────────────────────────────────
         content = format_report(
             title, source_url, pub_date,
-            summary, quotes, factcheck_md,
+            summary, factcheck_md,
         )
 
         reports.append({"title": title, "content": content})
