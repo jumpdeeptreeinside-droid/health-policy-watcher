@@ -249,38 +249,6 @@ PROMPT_BLOG_URL = """
 7. **個人名や配信者名（VTuber等）は絶対に出力しないでください。**
 """
 
-# ──────────────────────────────────────────────
-# 読み間違い防止辞書（Podcast台本用）
-# ──────────────────────────────────────────────
-def _load_podcast_dict() -> str:
-    """読み間違い防止辞書をプロンプト用文字列として読み込む"""
-    dict_path = Path(__file__).parent / "podcast_dictionary.json"
-    if not dict_path.exists():
-        return ""
-    try:
-        data = json.load(open(dict_path, "r", encoding="utf-8"))
-        lines = [f"- {d['sur']} → {d['pron']}" for d in data]
-        return "\n".join(lines)
-    except Exception:
-        return ""
-
-
-_PODCAST_DICT_PROMPT = ""
-_dict_str = _load_podcast_dict()
-if _dict_str:
-    _PODCAST_DICT_PROMPT = f"""
-
-### 読み間違い防止（重要）
-以下は音声読み上げソフト（VOICEVOX）で読み間違いが多い単語の辞書です。
-台本にこれらの単語が含まれる場合、読み間違いを防ぐために以下のいずれかの対応をしてください：
-- 漢字をひらがな・カタカナに置き換える（例：「十分な」→「じゅうぶんな」）
-- 括弧内にふりがなを追加する（例：「口腔（こうくう）内」）
-- 英字略語は日本語読みを括弧で補足する（例：「WHO（ダブリューエイチオー）」）
-
-{_dict_str}
-"""
-    logger.info(f"読み間違い防止辞書: {len(_dict_str.splitlines())} 語を読み込み")
-
 # Podcast台本生成プロンプト（analyze_pdf.py / analyze_url.py の PROMPT_SCRIPT と同一）
 PROMPT_SCRIPT = """
 # 役割設定
@@ -321,7 +289,7 @@ PROMPT_SCRIPT = """
 5. **個人名や配信者名（VTuber等）は絶対に出力しないでください。**
 
 上記のルールに厳密に従って、Podcast台本を作成してください。
-""" + _PODCAST_DICT_PROMPT
+"""
 
 # Podcast台本 → ファクトチェックプロンプト
 PROMPT_FACTCHECK = """
