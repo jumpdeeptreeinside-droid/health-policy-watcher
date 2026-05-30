@@ -121,22 +121,31 @@ PROMPT_SUMMARY = """\
 
 ## タスク
 以下の審議会議事録テキストを読み、構造化された要約を JSON 形式で出力してください。
+出力は「公開本文(summary)」と「校正用の全引用(quotes_full)」の2つです。
 
-### 要約ルール
-- 合計2,000文字程度（±200文字）
+### 公開本文(summary)のルール
+- **合計1,800字以内（厳守）。A4で2枚に収まる分量にすること。**
 - 以下の構成で Markdown 形式で作成:
-  - `## 会議概要` ── テキストに記載された日時・参加者・議題（150文字程度）
-  - `## 議題① ○○について` ── 各議題の要点（議題数に応じて配分）
-    - テキストに記載された議論の核心を簡潔に
-    - テキストに記載された各立場の主な主張（診療側・支払側など）
-    - テキストに記載された決定事項・結論
-  - `## 今回のポイント` ── テキストから読み取れる注目点（200文字程度）
-- 客観的・中立的なトーン
-- 冗長な表現を避け、簡潔にまとめる
+  - `## 会議概要` ── テキストに記載された日時・参加者・議題（120字程度）
+  - `## 議題① ○○について` ── 各議題の要点
+    - テキストに記載された議論の核心・各立場の主張（診療側・支払側など）・決定事項を簡潔に
+    - **議題が多い場合は重要な議題に字数を配分し、形式的な議題（質疑なく承認された等）は1〜2行に圧縮する**
+    - 議題セクション全体で1,200字以内
+  - `## 今回のポイント` ── テキストから読み取れる注目点（180字程度）
+  - `## 委員の声` ── 議論の核心・対立・論点を最もよく示す発言を **1〜2個だけ** 原文ママで引用
+    - 形式: 「（発言の原文）」（◯◯委員）
+    - **「要望」「お願い」系の発言に偏らせない**。議論の本質や立場の違いが際立つ発言を選ぶ
+- 客観的・中立的なトーン。冗長な表現を避け、簡潔にまとめる
+
+### 校正用の全引用(quotes_full)のルール
+- 公開本文の各記述の根拠となる主要発言を、原文ママで列挙（筆者のファクトチェック用）
+- 形式: `- 「（発言の原文）」（◯◯委員）` の箇条書き
+- これは筆者の校正専用であり、公開前に削除される前提
 
 ## 出力形式（JSONのみ・前置き不要）
 {{
-  "summary": "## 会議概要\\n..."
+  "summary": "## 会議概要\\n...",
+  "quotes_full": "- 「...」（◯◯委員）\\n- 「...」（◯◯委員）"
 }}
 
 ## 議事録本文
@@ -391,8 +400,10 @@ def format_report(
     pub_date: str,
     summary: str,
     factcheck_md: str,
+    quotes_full: str = "",
 ) -> str:
     today = datetime.now(JST).strftime("%Y年%m月%d日")
+    # ── 公開部（A4 2枚以内・委員の声まで含む）─────────────
     lines: list[str] = [
         f"# 【議事録要約】{title}",
         f"配信: {today}　原文: {source_url}",
@@ -403,8 +414,20 @@ def format_report(
         "",
     ]
 
-    # ファクトチェックセクション（文字数外）
-    lines += ["---", ""]
+    # ── ここから下は校正用（公開前に削除）───────────────
+    lines += [
+        "---",
+        "",
+        "> ⚠️ **ここから下は校正用です。ファクトチェック後、公開前に削除してください。**",
+        "",
+    ]
+    if quotes_full:
+        lines += [
+            "## 校正用：全引用",
+            "",
+            quotes_full,
+            "",
+        ]
     if factcheck_md:
         lines.append(factcheck_md)
     else:
@@ -543,13 +566,14 @@ def main() -> None:
         result = generate_summary(title, text, gemini_client, gemini_model)
         time.sleep(2)
 
-        summary = result.get("summary", "")
+        summary     = result.get("summary", "")
+        quotes_full = result.get("quotes_full", "")
 
         if not summary:
             logger.warning("  要約生成失敗。スキップします。")
             continue
 
-        logger.info(f"  要約: {len(summary)} 文字")
+        logger.info(f"  要約: {len(summary)} 文字 / 校正用引用: {'あり' if quotes_full else 'なし'}")
 
         # ── [Step 2] ファクトチェック ─────────────────────
         logger.info("  [Step 2] ファクトチェック中...")
@@ -559,7 +583,7 @@ def main() -> None:
         # ── レポート整形 ───────────────────────────────────
         content = format_report(
             title, source_url, pub_date,
-            summary, factcheck_md,
+            summary, factcheck_md, quotes_full,
         )
 
         reports.append({"title": title, "content": content})
