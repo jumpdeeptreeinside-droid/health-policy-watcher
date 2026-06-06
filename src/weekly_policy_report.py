@@ -470,6 +470,16 @@ def get_source_tag(url: str) -> str:
     return "#業界紙"
 
 
+# 発信元タグのうち「国際」扱いするもの（国内→国際の並び替えに使用）
+INTERNATIONAL_SOURCE_TAGS = {"#WHO", "#国際"}
+
+
+def is_international(source_tag: str) -> bool:
+    """発信元タグが国際（WHO・国際機関等）なら True。
+    厚労省・財務省・内閣府など日本国内の発信元は False（国内扱い）。"""
+    return source_tag in INTERNATIONAL_SOURCE_TAGS
+
+
 # ──────────────────────────────────────────────
 # Gemini 処理
 # ──────────────────────────────────────────────
@@ -842,6 +852,15 @@ def main() -> None:
     if not articles_data:
         logger.error("  処理可能な記事がありませんでした。終了します。")
         return
+
+    # ── 並び替え: 国内記事を先に、国際記事を後に ──────────────
+    # sort は安定ソートのため、各グループ内では取得時の日付順が保たれる。
+    articles_data.sort(key=lambda art: is_international(art["source_tag"]))
+    domestic_n = sum(1 for a in articles_data if not is_international(a["source_tag"]))
+    logger.info(
+        f"  並び替え完了（国内→国際）: 国内 {domestic_n} 本 / "
+        f"国際 {len(articles_data) - domestic_n} 本"
+    )
 
     # ── 3. 全体レポート整形・保存 ──────────────────────────
     logger.info("\n[3] 全体レポートを整形・保存中...")
