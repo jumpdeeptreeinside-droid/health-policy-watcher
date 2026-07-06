@@ -40,7 +40,8 @@ OUT_DIR = os.path.expanduser("~/obsidian-brain/_podcast/02_編集後")
 WORK_DIR = os.path.expanduser("~/obsidian-brain/_podcast/_Output/tts")
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")  # 任意: 完成通知
 
-NARRATOR = "宮舞モカ"
+# CLIは日本語ナレーター名を受け付けない(iconv問題)ため英語名で指定する
+NARRATOR = "Miyamai Moca"
 PITCH = "-35"          # GUIの-0.35に相当（セント）
 SPEED_TALK = "100"     # OP/タイトル/ED
 SPEED_BODY = "120"     # 本文（現行.vppの実測値）
