@@ -1,0 +1,56 @@
+# Notion → crosshealthjp 公式サイト自動公開（WordPress版の置き換え・2026-07-06 オペ改訂）
+# 旧 wordpress_uploader.yml と同じ時間帯に実行。tekutekuradio への投稿は停止済み。
+name: Site Uploader (crosshealthjp)
+
+on:
+  schedule:
+    - cron: '0 0 * * *'    # JST 9:00
+    - cron: '0 5 * * *'    # JST 14:00
+    - cron: '30 10 * * *'  # JST 19:30
+  workflow_dispatch:
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout watcher
+        uses: actions/checkout@v4
+
+      - name: Checkout crosshealthjp (deploy key)
+        uses: actions/checkout@v4
+        with:
+          repository: jumpdeeptreeinside-droid/crosshealthjp
+          ssh-key: ${{ secrets.SITE_DEPLOY_KEY }}
+          path: site
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests Markdown
+
+      - name: Run site uploader
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SITE_ARTICLES_DIR: ${{ github.workspace }}/site/src/articles-data
+        run: python src/site_uploader.py
+
+      - name: Commit & push to crosshealthjp
+        run: |
+          cd site
+          if [ -n "$(git status --porcelain src/articles-data)" ]; then
+            git config user.name "CrossHealth Watcher Bot"
+            git config user.email "jump.deep.tree.inside@gmail.com"
+            git add src/articles-data
+            git commit -m "watcher: 記事の自動公開"
+            git push
+            echo "pushed: Cloudflare Pages が数分でデプロイします"
+          else
+            echo "新規記事なし（pushスキップ）"
+          fi

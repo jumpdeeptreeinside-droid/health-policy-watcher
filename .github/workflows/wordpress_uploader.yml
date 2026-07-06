@@ -3,10 +3,11 @@ name: WordPress 自動投稿 (Health Policy Watcher)
 on:
   # コンテンツ生成（8:30 / 13:30 / 18:30）の直後に実行
   # UTC = JST - 9
-  schedule:
-    - cron: '0 0 * * *'    # JST  9:00 → 当日 18:00 に公開
-    - cron: '0 5 * * *'    # JST 14:00 → 当日 18:00 に公開
-    - cron: '30 10 * * *'  # JST 19:30 → 翌日  6:00 に公開
+  # 2026-07-06 オペ改訂: tekutekuradioへの自動投稿を停止（site_uploader.ymlに移行）。手動実行のみ可。
+  # schedule:
+  # - cron: '0 0 * * *'    # JST  9:00 → 当日 18:00 に公開
+  # - cron: '0 5 * * *'    # JST 14:00 → 当日 18:00 に公開
+  # - cron: '30 10 * * *'  # JST 19:30 → 翌日  6:00 に公開
 
   # GitHub Actions 画面から手動実行も可能
   workflow_dispatch:
