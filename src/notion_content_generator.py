@@ -122,24 +122,21 @@ PROMPT_BLOG = """
 5. 絵文字や顔文字は使用しないでください。
 """
 
-PROMPT_PODCAST = """
+# ── 音声の強弱（2026-07-06 オペ改訂・木内さん設計）─────────────────
+# 記事（ブログ）は常に詳細。音声はNotionのCategoryで深さを変える。
+# 例：アフリカの国際保健ニュース → 記事は詳細・音声は1〜2文。
+_PODCAST_PROMPT_BASE = """
 # 役割設定
 あなたは、ポッドキャスト番組「医療政策ウォッチャー」の台本作成者です。
 
 # 出力内容
 提供された資料を基に、ポッドキャスト用台本を作成してください。
 
-## ポッドキャスト台本
-
-### 構成
-1. **オープニング:** 簡潔な導入
-2. **本編:** 資料の要点を対話形式で解説（15分程度の内容）
-3. **まとめ:** 今後の注目点
+{depth_rule}
 
 ### 執筆ルール
 - **文体:** 話し言葉（デスマス調）で自然な会話調
 - **改行:** 句点（。）ごとに改行
-- **長さ:** 音声読み上げで12〜15分程度
 
 ### 出力フォーマット
 - タイトルのみ（見出し1として # で記載）
@@ -151,6 +148,56 @@ PROMPT_PODCAST = """
 3. 前置きや挨拶は不要
 4. マークダウン形式で出力
 """
+
+_DEPTH_RULES = {
+    "full": """## ポッドキャスト台本（詳細解説）
+
+### 構成
+1. **オープニング:** 簡潔な導入
+2. **本編:** 資料の要点を解説（政策的な含意・現場への影響まで踏み込む）
+3. **まとめ:** 今後の注目点
+
+- **長さ:** 音声読み上げで3〜5分程度""",
+    "medium": """## ポッドキャスト台本（標準）
+
+### 構成
+1. 一文の導入
+2. 要点を2〜3個、簡潔に解説
+
+- **長さ:** 音声読み上げで1〜2分程度""",
+    "short": """## ポッドキャスト台本（短報）
+
+### 構成
+- ニュースの核心を4〜6文で伝える（導入・まとめ不要）
+- 日本への影響・関係があれば必ず一文入れる
+
+- **長さ:** 音声読み上げで30秒〜1分""",
+    "brief": """## ポッドキャスト台本（一言ニュース）
+
+### 構成
+- **1〜2文のみ。**「どこで・何が起きたか」だけを伝える
+- 詳細はWebサイトの記事で読める前提（記事側は詳細版がある）
+
+- **長さ:** 音声読み上げで15秒以内""",
+}
+
+# NotionのCategory（セレクト値）→ 台本の深さ。ここを書き換えれば調整できる。
+AUDIO_DEPTH_BY_CATEGORY = {
+    "国内・診療": "full",
+    "国内・保健": "medium",
+    "国際・日本関連": "short",
+    "国際・その他": "brief",
+}
+DEFAULT_AUDIO_DEPTH = "full"  # 未分類は安全側（詳細）
+
+
+def podcast_prompt_for(category: Optional[str] = None) -> str:
+    depth = AUDIO_DEPTH_BY_CATEGORY.get(category or "", DEFAULT_AUDIO_DEPTH)
+    return _PODCAST_PROMPT_BASE.format(depth_rule=_DEPTH_RULES[depth])
+
+
+# 後方互換（旧参照用）
+PROMPT_PODCAST = podcast_prompt_for(None)
 
 
 class NotionContentGenerator:
@@ -283,7 +330,17 @@ source_url: {source_url}
             logger.error(f"ファイル保存エラー: {e}")
             return False
 
-    def generate_content_from_pdf(self, pdf_path: str, source_url: str, title: str) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    def get_category(self, page: dict) -> Optional[str]:
+        """Category セレクト値（国内・診療/国内・保健/国際・日本関連/国際・その他）を取得。無ければ None＝詳細扱い"""
+        try:
+            prop = page.get('properties', {}).get('Category', {})
+            if prop.get('type') == 'select' and prop.get('select'):
+                return prop['select'].get('name')
+        except Exception:
+            pass
+        return None
+
+    def generate_content_from_pdf(self, pdf_path: str, source_url: str, title: str, category: Optional[str] = None) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
         """
         PDFからブログ記事と台本を生成してファイルに保存
         
@@ -304,7 +361,7 @@ source_url: {source_url}
             
             # Podcast台本生成
             logger.info("Podcast台本を生成中...")
-            podcast_response = self.model.generate_content([PROMPT_PODCAST, pdf_file])
+            podcast_response = self.model.generate_content([podcast_prompt_for(category), pdf_file])
             podcast_content = podcast_response.text
             
             # ファイル削除
@@ -331,7 +388,7 @@ source_url: {source_url}
             logger.error(f"PDF処理エラー: {e}")
             return None, None, None, None
 
-    def generate_content_from_url(self, url: str, title: str) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    def generate_content_from_url(self, url: str, title: str, category: Optional[str] = None) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
         """
         URLからブログ記事と台本を生成してファイルに保存
         
@@ -354,7 +411,7 @@ source_url: {source_url}
             
             # Podcast台本生成
             logger.info("Podcast台本を生成中...")
-            podcast_prompt = PROMPT_PODCAST + f"\n\n# 入力コンテンツ\n\n{content[:50000]}"
+            podcast_prompt = podcast_prompt_for(category) + f"\n\n# 入力コンテンツ\n\n{content[:50000]}"
             podcast_response = self.model.generate_content(podcast_prompt)
             podcast_content = podcast_response.text
             
@@ -417,8 +474,10 @@ source_url: {source_url}
                 continue
             
             # コンテンツ生成とファイル保存
+            category = self.get_category(page)
+            logger.info(f"  分類: {category or '未分類(詳細扱い)'}")
             blog_content, podcast_content, blog_file, script_file = self.generate_content_from_pdf(
-                pdf_path, source_url, title
+                pdf_path, source_url, title, category
             )
             
             if not blog_content or not podcast_content:
@@ -475,8 +534,10 @@ source_url: {source_url}
                 continue
             
             # コンテンツ生成とファイル保存
+            category = self.get_category(page)
+            logger.info(f"  分類: {category or '未分類(詳細扱い)'}")
             blog_content, podcast_content, blog_file, script_file = self.generate_content_from_url(
-                source_url, title
+                source_url, title, category
             )
             
             if not blog_content or not podcast_content:
