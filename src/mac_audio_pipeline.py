@@ -159,16 +159,88 @@ def build_episode(title: str, body_text: str, out_mp3: str) -> bool:
     return True
 
 
-def notify(msg: str) -> None:
-    if not NTFY_TOPIC:
-        return
+SITE_REPO = os.path.expanduser("~/crosshealthjp")
+
+
+def publish_episode(mp3_path: str, title: str, description: str = "") -> str:
+    """完成mp3を公式サイトのPodcastフィードに公開する（Spotify手動アップの置き換え）。
+    mp3を public/podcast/audio/ へ配置 → episodes.json に追記 → feed.xml 再生成 → git push。
+    Apple/Spotify等はフィード更新を自動で拾う。戻り値=公開URL（失敗時は空文字）"""
+    import shutil
+    from email.utils import format_datetime
+    from datetime import timezone
+
+    audio_dir = os.path.join(SITE_REPO, "public/podcast/audio")
+    os.makedirs(audio_dir, exist_ok=True)
+    fname = os.path.basename(mp3_path)
+    dst = os.path.join(audio_dir, fname)
+    shutil.copy(mp3_path, dst)
+
+    # duration（秒）とバイト数
+    dur = ""
+    pr = subprocess.run(["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                         "-of", "csv=p=0", dst], capture_output=True, text=True)
+    if pr.returncode == 0 and pr.stdout.strip():
+        total = int(float(pr.stdout.strip()))
+        dur = f"{total // 60}:{total % 60:02d}"
+
+    url = f"https://www.crosshealthjp.org/podcast/audio/{fname}"
+    ep = {
+        "title": title,
+        "pubDate": format_datetime(datetime.now(timezone.utc)),
+        "guid": f"chj-{fname}",
+        "url": url,
+        "length": str(os.path.getsize(dst)),
+        "duration": dur,
+        "description": description or title,
+    }
+    manifest = os.path.join(SITE_REPO, "public/podcast/episodes.json")
+    eps = json.load(open(manifest, encoding="utf-8"))
+    eps.insert(0, ep)
+    json.dump(eps, open(manifest, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+
+    r = subprocess.run(["python3", "scripts/build_podcast_feed.py"], cwd=SITE_REPO,
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"  ✗ feed生成失敗: {r.stderr[-200:]}")
+        return ""
+
+    for cmd in (["git", "pull", "--rebase", "--quiet"],
+                ["git", "add", "public/podcast"],
+                ["git", "commit", "-q", "-m", f"podcast: {title[:50]}"],
+                ["git", "push", "-q"]):
+        r = subprocess.run(cmd, cwd=SITE_REPO, capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"  ✗ {' '.join(cmd[:2])} 失敗: {r.stderr[-200:]}")
+            return ""
+    print(f"  ✅ Podcast公開: {url}（数分でフィード反映→各プラットフォームが自動取得）")
+    return url
+
+
+def send_mail(subject: str, body: str) -> None:
+    """完成/公開の通知メール（config.pyのGMAIL設定があれば送信・無ければスキップ）"""
     try:
-        import urllib.request
-        req = urllib.request.Request(f"https://ntfy.sh/{NTFY_TOPIC}",
-                                     data=msg.encode(), method="POST")
-        urllib.request.urlopen(req, timeout=10)
-    except Exception:
-        pass
+        import config
+        addr = getattr(config, "GMAIL_ADDRESS", "")
+        pw = getattr(config, "GMAIL_APP_PASSWORD", "")
+    except ImportError:
+        addr = pw = ""
+    if not addr or not pw:
+        print(f"  （メール未設定のため通知スキップ: {subject}）")
+        return
+    import smtplib
+    from email.mime.text import MIMEText
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = addr
+    msg["To"] = "jump.deep.tree.inside@gmail.com"
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as srv:
+            srv.starttls()
+            srv.login(addr, pw)
+            srv.send_message(msg)
+    except Exception as e:
+        print(f"  ⚠ メール送信失敗: {e}")
 
 
 def sanitize(name: str) -> str:
@@ -224,19 +296,62 @@ def process_notion(dry_run: bool = False) -> int:
         length = f"{float(m.group(1))/60:.1f}分" if m else "?"
         print(f"  ✅ 完成: {out_mp3}（{length}）")
 
-        # Status(Podcast) → 完了（従来の緑さん手作業に相当）
+        # 公開はしない＝翔太さんの試聴チェックを挟む（二段階制 2026-07-06）
+        # mp3パスをNotionに記録し、Status(Podcast)を「試聴待ち」へ。
+        # 試聴してOKなら手動で「公開待ち」に変更→次回実行時に自動公開。
+        import requests as _rq2
+        try:
+            _rq2.patch(f"{nw.notion_base}/pages/{page_id}",
+                       headers=nw.notion_headers,
+                       json={"properties": {"AudioPath": {"rich_text": [{"text": {"content": out_mp3}}]}}},
+                       timeout=30).raise_for_status()
+        except Exception as e:
+            print(f"  ⚠ AudioPath記録失敗: {e}")
+
         import requests
         try:
             resp = requests.patch(f"{nw.notion_base}/pages/{page_id}",
                                   headers=nw.notion_headers,
-                                  json={"properties": {"Status(Podcast)": {"status": {"name": "完了"}}}},
+                                  json={"properties": {"Status(Podcast)": {"status": {"name": "試聴待ち"}}}},
                                   timeout=30)
             resp.raise_for_status()
+            print("  ✅ Notion Status(Podcast) → 試聴待ち")
+        except Exception as e:
+            print(f"  ⚠ ステータス更新失敗: {e}（Notion側に「試聴待ち」オプションが必要）")
+
+        send_mail(f"【試聴依頼】{title[:50]}（{length}）",
+                  f"音声が完成しました。試聴してください。\n\nファイル: {out_mp3}\n"
+                  f"OKなら Notion の Status(Podcast) を「公開待ち」に変更\n"
+                  f"→ 次の定時実行（毎時）で自動的にPodcastフィードへ公開されます。")
+        done += 1
+
+    # ── 第2段階: 「公開待ち」→ フィード公開 ─────────────
+    pages2 = nw.query_database({"property": "Status(Podcast)", "status": {"equals": "公開待ち"}})
+    print(f"\n公開待ち: {len(pages2)}件")
+    for page in pages2:
+        page_id = page.get("id")
+        title = nw.get_property_value(page, "Title") or "タイトルなし"
+        audio = nw.get_property_value(page, "AudioPath") or ""
+        if not audio or not os.path.exists(audio):
+            print(f"  ⏭ スキップ({title[:40]}): AudioPathのmp3が見つかりません: {audio}")
+            continue
+        if dry_run:
+            print(f"  [dry-run] 公開予定: {title[:50]}")
+            continue
+        desc = nw.get_property_value(page, "PodcastDescription") or ""
+        url = publish_episode(audio, title, desc)
+        if not url:
+            continue
+        import requests
+        try:
+            requests.patch(f"{nw.notion_base}/pages/{page_id}",
+                           headers=nw.notion_headers,
+                           json={"properties": {"Status(Podcast)": {"status": {"name": "完了"}}}},
+                           timeout=30).raise_for_status()
             print("  ✅ Notion Status(Podcast) → 完了")
         except Exception as e:
             print(f"  ⚠ ステータス更新失敗: {e}")
-
-        notify(f"[音声化完了] {title[:50]}（{length}）→ Spotifyへアップしてください")
+        send_mail(f"【公開完了】{title[:50]}", f"Podcastフィードに公開しました。\n{url}\n各プラットフォームには数時間内に反映されます。")
         done += 1
     return done
 
@@ -246,6 +361,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--text", help="Notionを使わず、テキスト/mdファイルから単発合成（テスト用）")
     ap.add_argument("--title", default="テストエピソード")
+    ap.add_argument("--publish", action="store_true", help="--textの結果をPodcastフィードに公開まで行う")
     args = ap.parse_args()
 
     if args.text:
@@ -253,6 +369,8 @@ def main():
         out = os.path.join(OUT_DIR, f"{datetime.now().strftime('%Y%m%d_%H%M')}_{sanitize(args.title)}.mp3")
         ok = build_episode(args.title, body, out)
         print(("✅ 完成: " + out) if ok else "✗ 失敗")
+        if ok and args.publish:
+            publish_episode(out, args.title)
         sys.exit(0 if ok else 1)
 
     n = process_notion(dry_run=args.dry_run)
