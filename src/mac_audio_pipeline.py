@@ -217,6 +217,64 @@ def publish_episode(mp3_path: str, title: str, description: str = "") -> str:
     return url
 
 
+DIC_PATH = os.path.expanduser(
+    "~/Library/Application Support/Dreamtonics/Voicepeak/settings/dic.json")
+QC_MODEL = "gemini-flash-latest"
+
+
+def qc_audio(mp3_path: str, script_text: str) -> dict:
+    """AI検品（2026-07-06 木内さん発案）: 生成音声をGeminiに聴かせ、台本と突き合わせる。
+    戻り値: {"ok": bool, "issues": [{"word","heard","reading"}], "note": str}
+    検出対象=明確な誤読・脱落・数字の読み崩れ。アクセントの好みは対象外（人の耳の仕事）。"""
+    try:
+        import google.generativeai as genai
+        import config
+        genai.configure(api_key=config.GEMINI_API_KEY)
+        audio = genai.upload_file(mp3_path)
+        prompt = (
+            "あなたは日本語ポッドキャストの検品担当です。添付音声を聴き、以下の台本と突き合わせてください。\n"
+            "指摘するのは【明確な読み間違い】【文の脱落・途切れ】【数字や英略語の読み崩れ】のみ。\n"
+            "イントネーションや間の好みは指摘しないでください。\n\n"
+            "JSONのみで回答:\n"
+            '{"ok": true/false, "issues": [{"word": "台本上の表記", "heard": "実際に聞こえた読み", '
+            '"reading": "正しい読み（カタカナ）"}], "note": "一言メモ"}\n\n'
+            f"# 台本\n{script_text[:8000]}"
+        )
+        model = genai.GenerativeModel(QC_MODEL)
+        resp = model.generate_content([prompt, audio])
+        genai.delete_file(audio.name)
+        raw = resp.text.strip().strip("`").removeprefix("json").strip()
+        return json.loads(raw)
+    except Exception as e:
+        print(f"  ⚠ AI検品エラー（検品スキップ・人のチェックへ）: {e}")
+        return {"ok": True, "issues": [], "note": f"検品スキップ: {e}"}
+
+
+def add_dictionary_entries(issues: list) -> int:
+    """誤読語をVOICEPEAKユーザー辞書へ自動登録（既存エントリは上書きしない）"""
+    try:
+        d = json.load(open(DIC_PATH, encoding="utf-8"))
+    except Exception:
+        return 0
+    added = 0
+    for i in issues:
+        word, reading = i.get("word", ""), i.get("reading", "")
+        if not word or not reading or len(word) > 20:
+            continue
+        if any(e.get("sur") == word for e in d):
+            continue
+        kata = re.sub(r"[^ァ-ヶー]", "", reading)
+        if not kata:
+            continue
+        d.append({"sur": word, "pron": kata, "pos": "Japanese_Futsuu_meishi",
+                  "priority": 9, "accentType": 0})
+        added += 1
+        print(f"  📖 辞書自動登録: {word} → {kata}")
+    if added:
+        json.dump(d, open(DIC_PATH, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    return added
+
+
 def send_mail(subject: str, body: str) -> None:
     """完成/公開の通知メール（config.pyのGMAIL設定があれば送信・無ければスキップ）"""
     try:
@@ -288,8 +346,22 @@ def process_notion(dry_run: bool = False) -> int:
         print(f"  合成開始 → {os.path.basename(out_mp3)}")
         if not build_episode(title, body, out_mp3):
             print("  ✗ エピソード生成失敗")
-            notify(f"[音声化失敗] {title[:50]}")
+            send_mail(f"【音声化失敗】{title[:50]}", "エピソード生成に失敗しました。ログを確認してください。")
             continue
+
+        # ── AI検品（誤読検出→辞書自動登録→1回だけ再合成） ──
+        qc = qc_audio(out_mp3, f"{OP_TEXT}\n{title}\n{body}\n{ED_TEXT}")
+        qc_note = qc.get("note", "")
+        if not qc.get("ok", True) and qc.get("issues"):
+            print(f"  🔍 AI検品: 指摘{len(qc['issues'])}件 → 辞書登録して再合成")
+            if add_dictionary_entries(qc["issues"]):
+                if build_episode(title, body, out_mp3):
+                    qc2 = qc_audio(out_mp3, f"{OP_TEXT}\n{title}\n{body}\n{ED_TEXT}")
+                    qc_note = f"自動修正{len(qc['issues'])}件→再検品: {qc2.get('note','')}"
+                else:
+                    qc_note = "再合成失敗（初版を試聴へ）"
+        else:
+            print(f"  🔍 AI検品: 合格（{qc_note}）")
 
         dur = subprocess.run(["afinfo", out_mp3], capture_output=True, text=True)
         m = re.search(r"estimated duration: ([\d.]+)", dur.stdout)
@@ -321,6 +393,7 @@ def process_notion(dry_run: bool = False) -> int:
 
         send_mail(f"【試聴依頼】{title[:50]}（{length}）",
                   f"音声が完成しました。試聴してください。\n\nファイル: {out_mp3}\n"
+                  f"AI検品: {qc_note or '合格'}\n\n"
                   f"OKなら Notion の Status(Podcast) を「公開待ち」に変更\n"
                   f"→ 次の定時実行（毎時）で自動的にPodcastフィードへ公開されます。")
         done += 1
