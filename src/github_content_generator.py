@@ -713,14 +713,31 @@ def crawl_mhlw_page(page_url: str, download_dir: str) -> list[str]:
     downloaded: list[str] = []
 
     try:
-        resp = requests.get(page_url, timeout=30)
+        resp = requests.get(page_url, timeout=60)
         resp.raise_for_status()
-        resp.encoding = resp.apparent_encoding
-        html = resp.text
     except Exception as e:
         logger.error(f"  ページ取得失敗: {e}")
         return downloaded
 
+    # 直リンクPDF対応（2026-07-06 オペ改訂）: URL自体がPDFなら、リンク探索せずそのまま保存。
+    # （従来はHTMLとして解析→リンクゼロ→「PDFが見つかりません」で毎回スキップされていた）
+    content_type = (resp.headers.get("Content-Type") or "").lower()
+    if "application/pdf" in content_type or re.search(r"\.pdf(\?|$)", page_url, re.IGNORECASE):
+        name = _sanitize_filename(page_url.split("?")[0].split("/")[-1]) or "document"
+        if not name.lower().endswith(".pdf"):
+            name += ".pdf"
+        save_path = os.path.join(download_dir, name)
+        try:
+            with open(save_path, "wb") as f:
+                f.write(resp.content)
+            logger.info(f"    直リンクPDF ダウンロード完了: {os.path.basename(save_path)}")
+            return [save_path]
+        except Exception as e:
+            logger.warning(f"    直リンクPDF 保存失敗: {e}")
+            return downloaded
+
+    resp.encoding = resp.apparent_encoding
+    html = resp.text
     soup = BeautifulSoup(html, "lxml")
 
     for link in soup.find_all("a", href=True):

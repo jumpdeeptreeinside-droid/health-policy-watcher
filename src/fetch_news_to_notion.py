@@ -59,7 +59,7 @@ try:
     NOTION_API_KEY = os.environ.get('NOTION_API_KEY')
     NOTION_DATABASE_ID = os.environ.get('NOTION_DATABASE_ID')
     GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-    GEMINI_MODEL   = os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash')
+    GEMINI_MODEL   = os.environ.get('GEMINI_MODEL') or 'gemini-flash-latest'
     
     # 環境変数がない場合はconfig.pyから読み込む（ローカル実行用）
     if not NOTION_API_KEY or not NOTION_DATABASE_ID:
@@ -68,8 +68,8 @@ try:
         NOTION_DATABASE_ID = config.NOTION_DATABASE_ID
         if not GEMINI_API_KEY:
             GEMINI_API_KEY = getattr(config, 'GEMINI_API_KEY', None)
-        if not GEMINI_MODEL or GEMINI_MODEL == 'gemini-2.0-flash':
-            GEMINI_MODEL = getattr(config, 'GEMINI_MODEL_NAME', 'gemini-2.0-flash')
+        if not GEMINI_MODEL or GEMINI_MODEL == 'gemini-flash-latest':
+            GEMINI_MODEL = getattr(config, 'GEMINI_MODEL_NAME', 'gemini-flash-latest')
         logger.info("config.py から設定を読み込みました")
     else:
         logger.info("環境変数から設定を読み込みました")
