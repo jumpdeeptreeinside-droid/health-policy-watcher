@@ -20,6 +20,11 @@ import sys
 
 DB = os.path.expanduser("~/crosshealth_search.db")
 ARCHIVE = os.path.expanduser("~/chuikyo_archive")
+# 会議体ごとのアーカイブ（総会＋専門部会）。増やす時はここに足す。
+BODY_DIRS = {
+    "総会": ARCHIVE,
+    "薬価専門部会": os.path.expanduser("~/chuikyo_bukai_archive/yakka"),
+}
 
 # 発言者行のパターン。「○城山会長」「○清原薬剤管理官」「○事務局（宇都宮企画官）」等。
 ROLE_TAIL = ("委員長代理", "会長代理", "専門委員", "部会長", "小委員長", "委員長", "前会長", "会長",
@@ -44,8 +49,10 @@ def classify(speaker: str) -> tuple:
     for tail in ROLE_TAIL:
         if speaker.endswith(tail):
             name = speaker[: -len(tail)]
+            # 「委員長」＝薬価算定組織・専門組織等の委員長（総会への報告者）＝参考人扱い。
+            # 中医協内部の小委員長・部会長・会長は委員。
             kind = "事務局" if any(k in tail for k in KIND_JIMU) else (
-                "参考人" if tail in ("参考人", "構成員") else "委員")
+                "参考人" if tail in ("参考人", "構成員", "委員長", "委員長代理") else "委員")
             return (name or speaker, tail, kind)
     return (speaker, "", "その他")
 
@@ -122,23 +129,24 @@ def main():
         db.execute("DROP TABLE IF EXISTS chuikyo_utt")
         db.execute("DROP TABLE IF EXISTS chuikyo_utt_fts")
     db.execute("""CREATE TABLE IF NOT EXISTS chuikyo_utt (
-        id INTEGER PRIMARY KEY, kai INTEGER, date TEXT, speaker TEXT, role TEXT,
+        id INTEGER PRIMARY KEY, mtg TEXT, kai INTEGER, date TEXT, speaker TEXT, role TEXT,
         kind TEXT, seq INTEGER, chars INTEGER, agenda TEXT, body TEXT)""")
     db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chuikyo_utt_fts USING fts5(body, content=chuikyo_utt, tokenize='trigram')")
-    done_kai = {r[0] for r in db.execute("SELECT DISTINCT kai FROM chuikyo_utt")}
+    done = {(r[0], r[1]) for r in db.execute("SELECT DISTINCT mtg, kai FROM chuikyo_utt")}
     added = meetings = 0
-    for f in glob.glob(os.path.join(ARCHIVE, "*.json")):
-        rec = json.load(open(f, encoding="utf-8"))
-        if rec.get("kai") in done_kai and not rebuild:
-            continue
-        utts = parse_meeting(rec)
-        if not utts:
-            continue
-        db.executemany(
-            "INSERT INTO chuikyo_utt (kai,date,speaker,role,kind,seq,chars,agenda,body) VALUES (?,?,?,?,?,?,?,?,?)",
-            utts)
-        added += len(utts)
-        meetings += 1
+    for mtg, d in BODY_DIRS.items():
+        for f in glob.glob(os.path.join(d, "*.json")):
+            rec = json.load(open(f, encoding="utf-8"))
+            if (mtg, rec.get("kai")) in done and not rebuild:
+                continue
+            utts = parse_meeting(rec)
+            if not utts:
+                continue
+            db.executemany(
+                "INSERT INTO chuikyo_utt (mtg,kai,date,speaker,role,kind,seq,chars,agenda,body) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                [(mtg,) + u for u in utts])
+            added += len(utts)
+            meetings += 1
     if added:
         db.execute("INSERT INTO chuikyo_utt_fts(chuikyo_utt_fts) VALUES('rebuild')")
     db.commit()
