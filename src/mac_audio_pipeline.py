@@ -227,6 +227,8 @@ def publish_episode(mp3_path: str, title: str, description: str = "") -> str:
     }
     manifest = os.path.join(SITE_REPO, "public/podcast/episodes.json")
     eps = json.load(open(manifest, encoding="utf-8"))
+    # 同タイトルの既存エントリはリトライ由来の重複として置き換える
+    eps = [e for e in eps if e.get("title") != title]
     eps.insert(0, ep)
     json.dump(eps, open(manifest, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
