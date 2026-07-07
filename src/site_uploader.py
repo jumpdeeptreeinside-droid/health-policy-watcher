@@ -148,6 +148,8 @@ class SiteUploader(NotionWordPressUploader):
 
             blocks = self._truncate_at_factcheck(blocks)
             md_content = self.converter.convert(blocks)
+            # tekutekuradio時代のWordPressショートコード残骸([temp id=N]等)を除去（2026-07-07 木内さん指摘）
+            md_content = re.sub(r"\[temp[^\]]*\]", "", md_content)
             html_content = self._markdown_to_html(md_content)
             if not html_content.strip():
                 logger.error("  ❌ スキップ: HTML変換後のコンテンツが空です")
