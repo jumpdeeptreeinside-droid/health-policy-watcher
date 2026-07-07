@@ -87,6 +87,10 @@ WATCHLIST_FULL = {
 WATCHLIST = {k: v[0] for k, v in WATCHLIST_FULL.items()}
 CATEGORY = {k: v[1] for k, v in WATCHLIST_FULL.items()}
 JINJI_KW = ("人事", "役員", "代表取締役", "社長", "機構改革", "組織変更", "組織再編", "異動", "就任", "退任", "CEO")
+# M&A・再編ウォッチ（2026-07-08未明 木内さん発案）。承継事業のレーダーを兼ねる。
+MA_KW = ("公開買付", "TOB", "MBO", "買収", "経営統合", "合併", "子会社化", "株式取得",
+         "株式譲渡", "事業譲渡", "資本業務提携", "資本提携", "持株会社体制", "統合契約",
+         "完全子会社", "株式交換", "会社分割", "上場廃止")
 
 # 非上場・外資のニュースルーム監視（TDnetに存在しない企業・2026-07-07 木内さん決定）。
 # 各社のプレスリリース一覧ページを毎日巡回し、新着リンクのタイトルを人事キーワードで拾う。
@@ -280,7 +284,9 @@ def tdnet_day(d: date, seen: set) -> list:
             code4 = code[:4]
             if code4 not in WATCHLIST:
                 continue
-            if not any(k in title for k in JINJI_KW):
+            ma = any(k in title for k in MA_KW)
+            jinji = any(k in title for k in JINJI_KW)
+            if not (ma or jinji):
                 continue
             a = tds[3].find("a", href=True)
             url = (TDNET_BASE + a["href"]) if a else ""
@@ -291,6 +297,7 @@ def tdnet_day(d: date, seen: set) -> list:
             evs.append({"source": "tdnet", "date": d.isoformat(), "time": tm,
                         "code": code4, "company": WATCHLIST[code4],
                         "category": CATEGORY.get(code4, ""), "title": title, "url": url,
+                        "topic": "M&A" if ma else "人事",
                         "collected": datetime.now().isoformat(timespec="seconds")})
         # 次ページ有無（「次へ」リンクの活性）で判断できないため、100件未満なら終了
         if got < 100:
@@ -333,16 +340,21 @@ def scan_newsrooms(st: dict) -> list:
         first = key not in seen_map
         seen = set(seen_map.get(key, []))
         new = {u: t for u, t in items.items() if u not in seen}
+        hit = 0
         if not first:
             for u, t in new.items():
-                if any(k in t for k in JINJI_KW):
+                ma = any(k in t for k in MA_KW)
+                jinji = any(k in t for k in JINJI_KW)
+                if ma or jinji:
+                    hit += 1
                     evs.append({"source": "newsroom", "date": date.today().isoformat(),
                                 "company": name, "category": cat, "title": t, "url": u,
+                                "topic": "M&A" if ma else "人事",
                                 "collected": datetime.now().isoformat(timespec="seconds")})
         seen.update(items)
         seen_map[key] = sorted(seen)[-800:]  # 肥大化防止
         print(f"  newsroom {name}: リンク{len(items)}件 新着{len(new)}件"
-              + ("（初回＝ベースライン）" if first else f" 人事ヒット{sum(1 for u,t in new.items() if any(k in t for k in JINJI_KW))}件"))
+              + ("（初回＝ベースライン）" if first else f" ヒット{hit}件"))
         time.sleep(WAIT)
     return evs
 
@@ -353,8 +365,10 @@ def build_weekly_section(days=7) -> str:
     since = (date.today() - timedelta(days=days)).isoformat()
     evs = [e for e in load_events() if e["date"] >= since]
     mhlw = [e for e in evs if e["source"] == "mhlw"]
-    tdnet = sorted([e for e in evs if e["source"] in ("tdnet", "newsroom")],
-                   key=lambda e: (e["date"], e.get("time", "")))
+    corp = sorted([e for e in evs if e["source"] in ("tdnet", "newsroom")],
+                  key=lambda e: (e["date"], e.get("time", "")))
+    tdnet = [e for e in corp if e.get("topic", "人事") == "人事"]
+    ma = [e for e in corp if e.get("topic") == "M&A"]
     lines = ["## 今週の人事ウォッチ", ""]
     lines.append("### 厚労省幹部")
     if mhlw:
@@ -390,7 +404,16 @@ def build_weekly_section(days=7) -> str:
                 lines.append(f"- {md}　**{e['company']}**　{t}")
     else:
         lines.append("今週、ウォッチ対象企業の人事関連開示はありませんでした。")
-    lines += ["", "（出典：厚生労働省 幹部名簿／TDnet適時開示。毎日自動収集）", ""]
+    # M&A・再編ウォッチ（承継・業界再編のレーダー）
+    lines += ["", "## 今週のM&A・再編ウォッチ", ""]
+    if ma:
+        for e in ma:
+            md = f"{int(e['date'][5:7])}/{int(e['date'][8:10])}"
+            t = f"[{e['title']}]({e['url']})" if e.get("url") else e["title"]
+            lines.append(f"- {md}　**{e['company']}**（{e.get('category','')}）　{t}")
+    else:
+        lines.append("今週、ウォッチ対象企業（調剤・ドラッグストア・医薬品卸・製薬・CRO 52社）のM&A・再編関連の開示・発表はありませんでした。")
+    lines += ["", "（出典：厚生労働省 幹部名簿／TDnet適時開示／各社ニュースルーム。毎日自動収集）", ""]
     return "\n".join(lines)
 
 
