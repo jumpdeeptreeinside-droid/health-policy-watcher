@@ -1111,9 +1111,8 @@ def save_to_notion(
     # 構成:
     #   [引用元情報]
     #   ──────────
-    #   [temp id=3]
     #   （本文）
-    #   [temp id=2]
+    # ※[temp id=N]はWordPress時代のテンプレートタグ＝廃止（2026-07-07 木内さん指示）
     factcheck_blocks: list[dict] = []
     if factcheck_content:
         factcheck_blocks = [
@@ -1131,12 +1130,7 @@ def save_to_notion(
             },
         ]),
         {"object": "block", "type": "divider", "divider": {}},
-        # テンプレートタグ（先頭）
-        _block("paragraph", [_make_rich_text("[temp id=3]")]),
-    ] + markdown_to_notion_blocks(blog_body) + [
-        # テンプレートタグ（末尾）
-        _block("paragraph", [_make_rich_text("[temp id=2]")]),
-    ] + factcheck_blocks
+    ] + markdown_to_notion_blocks(blog_body) + factcheck_blocks
 
     logger.info(f"  ブログ記事ページを作成中: {blog_title[:50]}")
     blog_page_id = notion.create_child_page(parent_page_id, blog_title, blog_blocks)
