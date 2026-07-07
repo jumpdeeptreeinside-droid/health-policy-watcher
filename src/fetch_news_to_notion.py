@@ -943,6 +943,12 @@ class NotionUploader:
             if score_info and "pick" in score_info:
                 properties["AI採用予測"] = {"select": {"name": "おすすめ" if score_info["pick"] else "見送り"}}
 
+            # 中医協ウォッチ（2026-07-07 木内さん発案）: 中医協の議事録は自動で要約列へ
+            import re as _re
+            if _re.search(r"(中医協|中央社会保険医療協議会)", article.title) and "議事録" in article.title:
+                properties["Status(議事録)"] = {"status": {"name": "要約待ち"}}
+                logger.info("  🏛 中医協議事録を検知 → 要約待ちに自動投入")
+
             new_page = self.notion.pages.create(
                 parent={"database_id": self.database_id},
                 properties=properties,

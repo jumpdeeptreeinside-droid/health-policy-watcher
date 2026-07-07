@@ -3,7 +3,8 @@ name: 議事録要約自動生成 (Minutes Summarizer)
 on:
   # 毎週土曜日 6:00 JST (金曜 21:00 UTC) に実行
   schedule:
-    - cron: '0 21 * * 5'
+    # 2026-07-07 中医協ウォッチ始動: 週1(土曜)→毎日に（中医協議事録を自動検知して要約）
+    - cron: '0 21 * * *'   # JST 6:00 毎日
 
   # GitHub Actions 画面から手動実行も可能
   workflow_dispatch:
