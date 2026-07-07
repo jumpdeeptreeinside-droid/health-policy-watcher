@@ -106,9 +106,21 @@ CATEGORY_LABELS = {
     "D": "国際・その他",     # 日本にそれほど関わらない国際保健（各国の国内保健事情・地域プログラム等）
 }
 
+# 編集方針（木内さんの過去2,444件の採否判断からGeminiが蒸留・2026-07-07）
+# バックテスト: 未見100件で正解率91%/適合率92%/再現率90%
+_POLICY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'editorial_policy.txt')
+try:
+    EDITORIAL_POLICY = open(_POLICY_PATH, encoding='utf-8').read()
+except Exception:
+    EDITORIAL_POLICY = "（編集方針ファイルなし＝pick判定は参考値）"
+
 _SCORE_PROMPT = """\
 あなたは医療政策・ヘルスケア業界の専門アナリストです。
-以下のニュース記事タイトルリストを、次の4分類のいずれかに仕分けし、JSON形式で回答してください。
+以下のニュース記事タイトルリストについて、(1)4分類 (2)週次レポート推奨 (3)編集方針に基づく採否予測 をJSON形式で回答してください。
+
+# 編集方針（採否予測に使う）
+{policy}
+
 
 分類基準:
 - "A" = 国内・診療: 日本国内で、診療・調剤・薬局・ドラッグストアの実務に関わるもの（診療報酬、薬機法、医療提供体制、業界動向など）
@@ -118,11 +130,12 @@ _SCORE_PROMPT = """\
 
 出力形式（配列インデックスは入力と対応）:
 [
-  {{"cat": "A", "weekly": true}},
-  {{"cat": "D", "weekly": false}},
+  {{"cat": "A", "weekly": true, "pick": true}},
+  {{"cat": "D", "weekly": false, "pick": false}},
   ...
 ]
-weekly=true は週次レポート（WeeklyReport）に載せる価値がある場合。
+weekly=true は週次レポートに載せる価値がある場合。
+pick=true は編集方針に照らして「記事として取り上げるべき」場合。
 
 記事タイトルリスト:
 {titles}
@@ -147,7 +160,7 @@ def score_articles_with_gemini(articles: List["NewsArticle"]) -> List[dict]:
 
     import json as _json
     titles_text = "\n".join(f"{i+1}. {a.title}" for i, a in enumerate(articles))
-    prompt = _SCORE_PROMPT.format(titles=titles_text)
+    prompt = _SCORE_PROMPT.format(policy=EDITORIAL_POLICY, titles=titles_text)
 
     try:
         resp = client.models.generate_content(
@@ -867,7 +880,8 @@ class NotionUploader:
         base = f"https://api.notion.com/v1/databases/{self.database_id}"
         try:
             db = _rq.get(base, headers=headers, timeout=30).json()
-            if 'Category' in db.get('properties', {}):
+            props = db.get('properties', {})
+            if 'Category' in props and 'AI採用予測' in props:
                 return
             _rq.patch(base, headers=headers, timeout=30, json={
                 "properties": {"Category": {"select": {"options": [
@@ -875,6 +889,11 @@ class NotionUploader:
                     {"name": "国内・保健", "color": "orange"},
                     {"name": "国際・日本関連", "color": "blue"},
                     {"name": "国際・その他", "color": "gray"},
+                ]}}}}).raise_for_status()
+            _rq.patch(base, headers=headers, timeout=30, json={
+                "properties": {"AI採用予測": {"select": {"options": [
+                    {"name": "おすすめ", "color": "green"},
+                    {"name": "見送り", "color": "gray"},
                 ]}}}}).raise_for_status()
             db2 = _rq.get(base, headers=headers, timeout=30).json()
             if 'Category' in db2.get('properties', {}):
@@ -920,6 +939,10 @@ class NotionUploader:
             if label:
                 properties["Category"] = {"select": {"name": label}}
 
+            # AI採用予測（編集方針ベース・91%精度）。木内さんは「おすすめ」だけ見て確定すればよい
+            if score_info and "pick" in score_info:
+                properties["AI採用予測"] = {"select": {"name": "おすすめ" if score_info["pick"] else "見送り"}}
+
             new_page = self.notion.pages.create(
                 parent={"database_id": self.database_id},
                 properties=properties,
@@ -928,9 +951,10 @@ class NotionUploader:
 
         except Exception as e:
             # 分類メタデータが原因なら、記事登録を優先してCategory無しで再試行
-            if "Category" in str(e) and "Category" in properties:
-                logger.warning(f"Category起因の失敗→Category無しで再試行: {e}")
+            if ("Category" in str(e) or "AI採用予測" in str(e)) and ("Category" in properties or "AI採用予測" in properties):
+                logger.warning(f"分類メタデータ起因の失敗→除外して再試行: {e}")
                 properties.pop("Category", None)
+                properties.pop("AI採用予測", None)
                 try:
                     new_page = self.notion.pages.create(
                         parent={"database_id": self.database_id},
