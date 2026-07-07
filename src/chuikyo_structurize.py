@@ -22,12 +22,16 @@ DB = os.path.expanduser("~/crosshealth_search.db")
 ARCHIVE = os.path.expanduser("~/chuikyo_archive")
 
 # 発言者行のパターン。「○城山会長」「○清原薬剤管理官」「○事務局（宇都宮企画官）」等。
-ROLE_TAIL = ("委員長代理", "会長代理", "専門委員", "部会長", "小委員長", "委員長", "会長",
+ROLE_TAIL = ("委員長代理", "会長代理", "専門委員", "部会長", "小委員長", "委員長", "前会長", "会長",
              "委員", "参考人", "構成員", "課長補佐", "企画官", "審議官", "管理官", "課長",
              "室長", "局長", "参事官", "技官", "薬剤管理官", "歯科医療管理官", "数理官")
 SPEAKER_RE = re.compile(r"^○([^\s　○]{1,24})$")
+# インライン形式（第189回等）: 「○遠藤前会長　発言文…」＝話者と本文が同一行
+INLINE_RE = re.compile(r"^○([^\s　○]{1,16})[　](\S.*)$")
 
 KIND_JIMU = ("課長", "企画官", "審議官", "管理官", "室長", "局長", "参事官", "技官", "補佐", "事務局")
+# 議題宣言（会長の「「〜」を議題といたします」）＝発言を議題に紐付けるアンカー
+AGENDA_RE = re.compile(r"「(.{2,60}?)」(?:について)?を議題と")
 
 
 def classify(speaker: str) -> tuple:
@@ -76,24 +80,38 @@ def parse_meeting(rec: dict) -> list:
     lines = rec["text"].split("\n")
     date = parse_date(rec["text"], rec.get("ctx", ""))
     utts, cur_speaker, buf, seq = [], None, [], 0
+    agenda = [None]  # 現在の議題（クロージャで更新）
+
+    def flush():
+        nonlocal seq
+        if cur_speaker and buf:
+            body = "\n".join(buf).strip()
+            if len(body) >= 10:
+                seq += 1
+                m = AGENDA_RE.findall(body)
+                if m:
+                    agenda[0] = m[-1][:80]
+                name, role, kind = classify(cur_speaker)
+                utts.append((rec.get("kai"), date, name, role, kind, seq, len(body),
+                             agenda[0], body))
+
+    def is_speaker_token(tok: str) -> bool:
+        return tok.startswith("事務局") or any(tok.endswith(t) for t in ROLE_TAIL)
+
     for line in lines:
+        s = line.strip()
+        im = INLINE_RE.match(s)
         if is_speaker_line(line):
-            if cur_speaker and buf:
-                body = "\n".join(buf).strip()
-                if len(body) >= 10:
-                    seq += 1
-                    name, role, kind = classify(cur_speaker)
-                    utts.append((rec.get("kai"), date, name, role, kind, seq, len(body), body))
-            cur_speaker = line.strip()[1:]
+            flush()
+            cur_speaker = s[1:]
             buf = []
+        elif im and is_speaker_token(im.group(1)) and im.group(1) not in ("日時", "場所", "出席者", "議題", "議事"):
+            flush()
+            cur_speaker = im.group(1)
+            buf = [im.group(2)]
         elif cur_speaker is not None:
             buf.append(line)
-    if cur_speaker and buf:
-        body = "\n".join(buf).strip()
-        if len(body) >= 10:
-            seq += 1
-            name, role, kind = classify(cur_speaker)
-            utts.append((rec.get("kai"), date, name, role, kind, seq, len(body), body))
+    flush()
     return utts
 
 
@@ -105,7 +123,7 @@ def main():
         db.execute("DROP TABLE IF EXISTS chuikyo_utt_fts")
     db.execute("""CREATE TABLE IF NOT EXISTS chuikyo_utt (
         id INTEGER PRIMARY KEY, kai INTEGER, date TEXT, speaker TEXT, role TEXT,
-        kind TEXT, seq INTEGER, chars INTEGER, body TEXT)""")
+        kind TEXT, seq INTEGER, chars INTEGER, agenda TEXT, body TEXT)""")
     db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chuikyo_utt_fts USING fts5(body, content=chuikyo_utt, tokenize='trigram')")
     done_kai = {r[0] for r in db.execute("SELECT DISTINCT kai FROM chuikyo_utt")}
     added = meetings = 0
@@ -117,7 +135,7 @@ def main():
         if not utts:
             continue
         db.executemany(
-            "INSERT INTO chuikyo_utt (kai,date,speaker,role,kind,seq,chars,body) VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO chuikyo_utt (kai,date,speaker,role,kind,seq,chars,agenda,body) VALUES (?,?,?,?,?,?,?,?,?)",
             utts)
         added += len(utts)
         meetings += 1

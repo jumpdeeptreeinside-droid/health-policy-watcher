@@ -24,6 +24,19 @@ INDEXES = [
     "/stf/shingi/shingi-chuo_128154old.html",    # 〜第440回
 ]
 OUT = os.path.expanduser("~/chuikyo_archive")
+
+# 部会アーカイブ（2026-07-08未明 Phase2拡張）。総会と同じ書式・別ディレクトリに保存。
+BODIES = {
+    "yakka": {
+        "name": "薬価専門部会",
+        "out": os.path.expanduser("~/chuikyo_bukai_archive/yakka"),
+        "indexes": [
+            "/stf/shingi/shingi-chuo_128157.html",        # 第212回〜
+            "/stf/shingi/shingi-chuo_128157_00008.html",  # 第162〜211回
+            "/stf/shingi/shingi-chuo_128157old.html",     # 第65〜161回
+        ],
+    },
+}
 UA = {"User-Agent": "Mozilla/5.0 (CrossHealth research; contact: jump.deep.tree.inside@gmail.com)"}
 WAIT = 1.5
 
@@ -80,6 +93,13 @@ def extract_text(html: str) -> tuple:
 
 
 def main():
+    import sys
+    body = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] in BODIES else None
+    global OUT, INDEXES
+    if body:
+        OUT = BODIES[body]["out"]
+        INDEXES = BODIES[body]["indexes"]
+        print(f"== 中医協 {BODIES[body]['name']} ==")
     os.makedirs(OUT, exist_ok=True)
     links = collect_minute_links()
     print(f"議事録リンク合計: {len(links)}件")
