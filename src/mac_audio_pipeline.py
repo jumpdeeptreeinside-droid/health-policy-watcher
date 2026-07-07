@@ -49,7 +49,7 @@ CHUNK_LIMIT = 120      # CLIの1回あたり文字数上限（140の安全側）
 SYNTH_TIMEOUT = 180    # 1チャンクの合成タイムアウト（秒）
 
 DRIVE_AUDITION = os.path.expanduser(
-    "~/Library/CloudStorage/GoogleDrive-jump.deep.tree.inside@gmail.com/マイドライブ/CrossHealth/Podcast試聴")
+    "~/Library/CloudStorage/GoogleDrive-tekutekuradio@gmail.com/マイドライブ/CrossHealth/Podcast試聴")
 
 # 読みの修正ルール（正規表現, 置換）。誤読が見つかったらここに追記（2026-07-07 木内さん指摘: 数字+人=にん）
 READING_FIXES = [
