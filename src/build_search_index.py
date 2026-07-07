@@ -31,6 +31,15 @@ def notion_query(body):
     return json.load(urllib.request.urlopen(req, timeout=60))
 
 
+def _normalize_web_url(url: str) -> str:
+    """旧tekutekuradio(WordPress)のURLを公式サイトの記事URLへ変換（?p=ID → /articles/ID/）"""
+    import re
+    m = re.search(r"tekutekuradio\.com/?\?p=(\d+)", url or "")
+    if m:
+        return f"https://www.crosshealthjp.org/articles/{m.group(1)}/"
+    return url or ""
+
+
 def sync_news(db):
     db.execute("DROP TABLE IF EXISTS news")
     db.execute("DROP TABLE IF EXISTS news_fts")
@@ -57,7 +66,7 @@ def sync_news(db):
                 (props.get('Date(Search)', {}).get('date') or {}).get('start', ''),
                 (props.get('Category', {}).get('select') or {}).get('name', ''),
                 props.get('URL(Source)', {}).get('url') or '',
-                props.get('URL(Web)', {}).get('url') or '',
+                _normalize_web_url(props.get('URL(Web)', {}).get('url') or ''),
                 1 if st in ('完了', 'ファクトチェック待ち', '執筆待ち(url)', '執筆待ち(pdf)') else 0,
             ))
         db.executemany("INSERT OR REPLACE INTO news VALUES (?,?,?,?,?,?,?)", rows)
