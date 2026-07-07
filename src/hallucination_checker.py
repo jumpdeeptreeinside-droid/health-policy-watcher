@@ -80,7 +80,7 @@ def _load_config() -> tuple[str, str, str, str, str, str]:
             sys.exit(1)
 
     if not gemini_model:
-        gemini_model = "gemini-2.0-flash"
+        gemini_model = "gemini-flash-latest"
 
     missing = [k for k, v in {
         "NOTION_API_KEY":     notion_key,
