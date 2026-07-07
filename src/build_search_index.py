@@ -2,11 +2,13 @@
 # -*- coding: utf-8 -*-
 """Pro検索エンジンのインデックス構築（Phase1・2026-07-07）
 
-~/crosshealth_search.db（SQLite FTS5 trigram）に2つの検索コーパスを構築:
-  1. news    : Notion全記事（タイトル・分類・日付・ソース・サイトURL）— 毎日再同期
-  2. chuikyo : 中医協議事録アーカイブ（~/chuikyo_archive/ 466会合・1,607万字）— 差分同期
+~/crosshealth_search.db（SQLite FTS5 trigram）に3つの検索コーパスを構築:
+  1. news      : Notion全記事（タイトル・分類・日付・ソース・サイトURL）— 毎日再同期
+  2. chuikyo   : 中医協議事録アーカイブ（~/chuikyo_archive/ 466会合・1,607万字）— 差分同期
+  3. shingikai : 国の審議会・検討会 議事録（~/shingikai_archive/ 社保審医療部会・医療保険部会・
+                 地域医療構想/医療計画系 検討会・WG）— 差分同期
 
-使い方: python3 src/build_search_index.py [--news-only|--chuikyo-only]
+使い方: python3 src/build_search_index.py [--news-only|--chuikyo-only|--shingikai-only]
 """
 import glob
 import json
@@ -20,6 +22,7 @@ import config  # noqa: E402
 
 DB = os.path.expanduser("~/crosshealth_search.db")
 ARCHIVE = os.path.expanduser("~/chuikyo_archive")
+SHINGIKAI_ARCHIVE = os.path.expanduser("~/shingikai_archive")
 H = {"Authorization": f"Bearer {config.NOTION_API_KEY}",
      "Notion-Version": "2022-06-28", "Content-Type": "application/json"}
 
@@ -101,12 +104,40 @@ def sync_chuikyo(db):
     print(f"✓ chuikyo: 追加{added}件（計{n}会合・{(chars or 0)//10000}万字）")
 
 
+def sync_shingikai(db):
+    db.execute("""CREATE TABLE IF NOT EXISTS shingikai (
+        slug TEXT PRIMARY KEY, council TEXT, council_name TEXT,
+        kai INTEGER, date TEXT, title TEXT, url TEXT, chars INTEGER, body TEXT)""")
+    db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS shingikai_fts USING fts5(body, content=shingikai, tokenize='trigram')")
+    have = {r[0] for r in db.execute("SELECT slug FROM shingikai")}
+    added = 0
+    for f in glob.glob(os.path.join(SHINGIKAI_ARCHIVE, "*", "*.json")):
+        council = os.path.basename(os.path.dirname(f))
+        slug = f"{council}/{os.path.basename(f)[:-5]}"
+        if slug in have:
+            continue
+        d = json.load(open(f, encoding='utf-8'))
+        db.execute("INSERT INTO shingikai VALUES (?,?,?,?,?,?,?,?,?)",
+                   (slug, council, d.get('council_name', ''), d.get('kai'),
+                    d.get('date', ''), d.get('title', ''), d.get('url', ''),
+                    d.get('chars', 0), d.get('text', '')))
+        added += 1
+    if added:
+        db.execute("INSERT INTO shingikai_fts(shingikai_fts) VALUES('rebuild')")
+    db.commit()
+    n, chars = db.execute("SELECT COUNT(*), SUM(chars) FROM shingikai").fetchone()
+    print(f"✓ shingikai: 追加{added}件（計{n}会合・{(chars or 0)//10000}万字）")
+
+
 def main():
+    only = [a for a in sys.argv[1:] if a.endswith('-only')]
     db = sqlite3.connect(DB)
-    if '--chuikyo-only' not in sys.argv:
+    if not only or '--news-only' in only:
         sync_news(db)
-    if '--news-only' not in sys.argv:
+    if not only or '--chuikyo-only' in only:
         sync_chuikyo(db)
+    if not only or '--shingikai-only' in only:
+        sync_shingikai(db)
     db.close()
     print(f"→ {DB} ({os.path.getsize(DB)//1024//1024}MB)")
 
