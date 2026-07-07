@@ -321,6 +321,12 @@ def process_notion(dry_run: bool = False) -> int:
         db_title = nw.get_property_value(page, "Title") or "タイトルなし"
         print(f"\n=== {db_title[:60]}")
 
+        # 国際系は個別音声化しない＝毎日19:05の「海外ヘッドライン」まとめに束ねる（2026-07-07）
+        cat_prop = page.get("properties", {}).get("Category", {}).get("select") or {}
+        if cat_prop.get("name") in ("国際・日本関連", "国際・その他"):
+            print(f"  ⏭ 国際系→夕方のまとめ対象（個別音声化しない）")
+            continue
+
         # Script(Podcast) プロパティ → リンク先Notionページ → 台本
         prop = page.get("properties", {}).get("Script(Podcast)", {})
         script_page_id = None
