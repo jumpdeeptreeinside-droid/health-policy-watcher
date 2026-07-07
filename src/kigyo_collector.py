@@ -229,19 +229,65 @@ def fetch_and_parse():
     print(f"✓ companies.json: {len(comp)}社")
 
 
+SITE_REPO = os.path.expanduser("~/crosshealthjp")
+SITE_JSON = os.path.join(SITE_REPO, "src/data/kigyo_companies.json")
+
+
+def export_site():
+    """companies.json→サイトの/companies/ページ用JSONに書き出し。変わった時だけcommit+push。"""
+    import subprocess
+    comp = json.load(open(COMPANIES, encoding="utf-8"))
+    out = []
+    for code, d in comp.items():
+        m = d["metrics"]
+        out.append({
+            "code": code, "name": d["name"], "category": d["category"],
+            "periodEnd": d.get("periodEnd", ""),
+            "revenue_oku": round(m["revenue"] / 1e8) if m.get("revenue") else None,
+            "growth_pct": round((m["revenue"] / m["revenue_prior"] - 1) * 100, 1)
+                          if m.get("revenue") and m.get("revenue_prior") else None,
+            "ordinary_oku": round(m["ordinary_income"] / 1e8) if m.get("ordinary_income") else None,
+            "net_oku": round(m["net_income"] / 1e8) if m.get("net_income") else None,
+            "employees": m.get("employees"),
+            "salary_man": round(m["avg_salary"] / 1e4) if m.get("avg_salary") else None,
+            "age": m.get("avg_age"), "tenure": m.get("avg_tenure"),
+        })
+    out.sort(key=lambda x: -(x["revenue_oku"] or 0))
+    rec = {"meta": {"updated": max(d["updated"] for d in comp.values())[:10], "count": len(out)},
+           "companies": out}
+    new = json.dumps(rec, ensure_ascii=False, indent=1)
+    if os.path.exists(SITE_JSON) and open(SITE_JSON, encoding="utf-8").read() == new:
+        print("  site: 変更なし")
+        return
+    open(SITE_JSON, "w", encoding="utf-8").write(new)
+    for cmd in (["git", "pull", "--rebase", "--autostash", "--quiet"],
+                ["git", "add", "src/data/kigyo_companies.json"],
+                ["git", "commit", "-q", "-m", "companies: 企業データ自動更新"],
+                ["git", "push", "-q"]):
+        r = subprocess.run(cmd, cwd=SITE_REPO, capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"  ✗ site {' '.join(cmd[:2])}: {r.stderr[-200:]}")
+            return
+    print("✓ site: /companies/ データ更新をpush（数分で本番反映）")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--index", type=int, metavar="DAYS")
     ap.add_argument("--fetch", action="store_true")
     ap.add_argument("--daily", action="store_true")
+    ap.add_argument("--export-site", action="store_true")
     args = ap.parse_args()
     if args.index:
         sweep_index(args.index)
     if args.daily:
         if sweep_index(2):
             fetch_and_parse()
+            export_site()
     if args.fetch:
         fetch_and_parse()
+    if args.export_site:
+        export_site()
 
 
 if __name__ == "__main__":
