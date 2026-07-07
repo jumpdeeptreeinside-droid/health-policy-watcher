@@ -86,7 +86,35 @@ WATCHLIST_FULL = {
 }
 WATCHLIST = {k: v[0] for k, v in WATCHLIST_FULL.items()}
 CATEGORY = {k: v[1] for k, v in WATCHLIST_FULL.items()}
-JINJI_KW = ("人事", "役員", "代表取締役", "社長", "機構改革", "組織変更", "組織再編", "異動")
+JINJI_KW = ("人事", "役員", "代表取締役", "社長", "機構改革", "組織変更", "組織再編", "異動", "就任", "退任", "CEO")
+
+# 非上場・外資のニュースルーム監視（TDnetに存在しない企業・2026-07-07 木内さん決定）。
+# 各社のプレスリリース一覧ページを毎日巡回し、新着リンクのタイトルを人事キーワードで拾う。
+# 初回はベースライン登録のみ（過去分でイベントを量産しない）。
+# ベーリンガー/リリーは自社サイトがbot遮断・TLS問題のためPR TIMESの配信ページを使う。
+NEWSROOMS = {
+    # 外資製薬10社
+    "pfizer": ("ファイザー", "製薬(外資)", "https://www.pfizer.co.jp/pfizer/company/press"),
+    "msd": ("MSD", "製薬(外資)", "https://www.msd.co.jp/news/"),
+    "astrazeneca": ("アストラゼネカ", "製薬(外資)", "https://www.astrazeneca.co.jp/media.html"),
+    "novartis": ("ノバルティス", "製薬(外資)", "https://www.novartis.com/jp-ja/news"),
+    "sanofi": ("サノフィ", "製薬(外資)", "https://www.sanofi.co.jp/ja/media-room/press-releases"),
+    "gsk": ("GSK", "製薬(外資)", "https://jp.gsk.com/ja-jp/news/press-releases/"),
+    "lilly": ("日本イーライリリー", "製薬(外資)", "https://prtimes.jp/companyrdf.php?company_id=5823"),
+    "bms": ("ブリストル・マイヤーズ スクイブ", "製薬(外資)", "https://www.bms.com/jp/media.html"),
+    "jnj": ("ジョンソン・エンド・ジョンソン", "製薬(外資)", "https://www.jnj.co.jp/media-center"),
+    "boehringer": ("日本ベーリンガーインゲルハイム", "製薬(外資)", "https://prtimes.jp/companyrdf.php?company_id=2981"),
+    # 非上場CRO
+    "iqvia": ("IQVIAジャパン", "CRO(非上場)", "https://www.iqvia.com/ja-jp/newsroom"),
+    "cmic": ("シミックHD", "CRO(非上場)", "https://www.cmicgroup.com/news"),
+    "eps": ("EPSホールディングス", "CRO(非上場)", "https://www.eps-holdings.co.jp/news/"),
+    "irom": ("アイロムグループ", "CRO(非上場)", "https://www.iromgroup.co.jp/news/"),
+    # 非上場調剤大手
+    "kraft": ("クラフト（さくら薬局）", "調剤(非上場)", "https://www.kraft-net.co.jp/news/"),
+    "sogo": ("総合メディカル", "調剤(非上場)", "https://www.sogo-medical.co.jp/ja/news.html"),
+    "ih": ("I&H（阪神調剤）", "調剤(非上場)", "https://i-h-inc.co.jp/news/ir.html"),
+    "aisei": ("アイセイ薬局", "調剤(非上場)", "https://www.aisei.co.jp/news/"),
+}
 
 WAREKI = {"令和": 2018, "平成": 1988}
 
@@ -272,13 +300,61 @@ def tdnet_day(d: date, seen: set) -> list:
     return evs
 
 
+# ---------- ニュースルーム（非上場・外資） ----------
+
+def scan_newsrooms(st: dict) -> list:
+    """各社プレスリリース一覧を巡回し、新着×人事キーワードをイベント化。
+
+    初回はベースライン登録のみ。URL集合の差分＝新着（タイトル変更には追従しない）。
+    """
+    from urllib.parse import urljoin
+    seen_map = st.setdefault("newsroom_seen", {})
+    evs = []
+    for key, (name, cat, url) in NEWSROOMS.items():
+        try:
+            body = get(url)
+        except Exception as e:
+            print(f"  ✗ newsroom {name}: {type(e).__name__} {str(e)[:60]}")
+            continue
+        items = {}
+        if "<rdf:RDF" in body[:500] or "<rss" in body[:500]:
+            # RSS（PR TIMES等）: <item>のtitle/linkを拾う
+            for m in re.finditer(r"<item[^>]*>.*?<title>(.*?)</title>.*?<link>(.*?)</link>", body, re.S):
+                t = re.sub(r"\s+", " ", re.sub(r"<!\[CDATA\[|\]\]>", "", m.group(1))).strip()
+                if t:
+                    items[m.group(2).strip()] = t[:120]
+        else:
+            soup = BeautifulSoup(body, "html.parser")
+            for a in soup.find_all("a", href=True):
+                t = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
+                if len(t) < 12:  # ナビ・ボタン類を除外（見出しリンクだけ拾う）
+                    continue
+                items[urljoin(url, a["href"])] = t[:120]
+        first = key not in seen_map
+        seen = set(seen_map.get(key, []))
+        new = {u: t for u, t in items.items() if u not in seen}
+        if not first:
+            for u, t in new.items():
+                if any(k in t for k in JINJI_KW):
+                    evs.append({"source": "newsroom", "date": date.today().isoformat(),
+                                "company": name, "category": cat, "title": t, "url": u,
+                                "collected": datetime.now().isoformat(timespec="seconds")})
+        seen.update(items)
+        seen_map[key] = sorted(seen)[-800:]  # 肥大化防止
+        print(f"  newsroom {name}: リンク{len(items)}件 新着{len(new)}件"
+              + ("（初回＝ベースライン）" if first else f" 人事ヒット{sum(1 for u,t in new.items() if any(k in t for k in JINJI_KW))}件"))
+        time.sleep(WAIT)
+    return evs
+
+
 # ---------- ウィークリー用セクション ----------
 
 def build_weekly_section(days=7) -> str:
     since = (date.today() - timedelta(days=days)).isoformat()
     evs = [e for e in load_events() if e["date"] >= since]
     mhlw = [e for e in evs if e["source"] == "mhlw"]
-    tdnet = sorted([e for e in evs if e["source"] == "tdnet"], key=lambda e: (e["date"], e["time"]))
+    tdnet = sorted([e for e in evs if e["source"] in ("tdnet", "newsroom")],
+                   key=lambda e: (e["date"], e.get("time", "")))
     lines = ["## 今週の人事ウォッチ", ""]
     lines.append("### 厚労省幹部")
     if mhlw:
@@ -300,7 +376,8 @@ def build_weekly_section(days=7) -> str:
         lines += ["今週、幹部名簿の更新はありませんでした。", ""]
     lines.append("### 企業（調剤・ドラッグストア・医薬品卸・製薬・CRO）")
     if tdnet:
-        order = ["調剤", "ドラッグストア", "医薬品卸", "製薬(内資)", "CRO", ""]
+        order = ["調剤", "調剤(非上場)", "ドラッグストア", "医薬品卸",
+                 "製薬(内資)", "製薬(外資)", "CRO", "CRO(非上場)", ""]
         for cat in order:
             grp = [e for e in tdnet if e.get("category", "") == cat]
             if not grp:
@@ -357,6 +434,8 @@ def main():
             d = date.today() - timedelta(days=i)
             evs += tdnet_day(d, seen)
             time.sleep(WAIT)
+        evs += scan_newsrooms(st)
+        save_state(st)
         append_events(evs)
         print(f"✓ daily: 新規イベント{len(evs)}件")
         write_section()
