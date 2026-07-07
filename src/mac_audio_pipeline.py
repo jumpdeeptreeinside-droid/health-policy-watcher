@@ -200,7 +200,10 @@ def publish_episode(mp3_path: str, title: str, description: str = "") -> str:
 
     audio_dir = os.path.join(SITE_REPO, "public/podcast/audio")
     os.makedirs(audio_dir, exist_ok=True)
-    fname = os.path.basename(mp3_path)
+    # 公開URLはASCII安全なスラッグに（日本語ファイル名はApple等で取得失敗し得る）
+    import hashlib
+    stem = datetime.now(timezone.utc).strftime("%Y%m%d") + "_" + hashlib.md5(title.encode()).hexdigest()[:8]
+    fname = f"{stem}.mp3"
     dst = os.path.join(audio_dir, fname)
     shutil.copy(mp3_path, dst)
 
