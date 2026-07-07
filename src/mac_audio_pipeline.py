@@ -191,6 +191,13 @@ def publish_episode(mp3_path: str, title: str, description: str = "") -> str:
     from email.utils import format_datetime
     from datetime import timezone
 
+    # 先にrepoを最新化（ファイルを変更した後にpullすると詰まるため・2026-07-07修正）
+    r = subprocess.run(["git", "pull", "--rebase", "--autostash", "--quiet"],
+                       cwd=SITE_REPO, capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"  ✗ git pull 失敗: {r.stderr[-200:]}")
+        return ""
+
     audio_dir = os.path.join(SITE_REPO, "public/podcast/audio")
     os.makedirs(audio_dir, exist_ok=True)
     fname = os.path.basename(mp3_path)
@@ -226,8 +233,7 @@ def publish_episode(mp3_path: str, title: str, description: str = "") -> str:
         print(f"  ✗ feed生成失敗: {r.stderr[-200:]}")
         return ""
 
-    for cmd in (["git", "pull", "--rebase", "--quiet"],
-                ["git", "add", "public/podcast"],
+    for cmd in (["git", "add", "public/podcast"],
                 ["git", "commit", "-q", "-m", f"podcast: {title[:50]}"],
                 ["git", "push", "-q"]):
         r = subprocess.run(cmd, cwd=SITE_REPO, capture_output=True, text=True)
