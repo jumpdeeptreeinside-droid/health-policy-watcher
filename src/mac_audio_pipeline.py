@@ -48,6 +48,21 @@ SPEED_BODY = "120"     # 本文（現行.vppの実測値）
 CHUNK_LIMIT = 120      # CLIの1回あたり文字数上限（140の安全側）
 SYNTH_TIMEOUT = 180    # 1チャンクの合成タイムアウト（秒）
 
+DRIVE_AUDITION = os.path.expanduser(
+    "~/Library/CloudStorage/GoogleDrive-jump.deep.tree.inside@gmail.com/マイドライブ/CrossHealth/Podcast試聴")
+
+# 読みの修正ルール（正規表現, 置換）。誤読が見つかったらここに追記（2026-07-07 木内さん指摘: 数字+人=にん）
+READING_FIXES = [
+    (r"([0-9０-９]+)人", r"\1にん"),
+]
+
+
+def apply_reading_fixes(text: str) -> str:
+    for pat, rep in READING_FIXES:
+        text = re.sub(pat, rep, text)
+    return text
+
+
 OP_TEXT = "こんにちは。メインパーソナリティーの、ばんじょうサクです。"
 ED_TEXT = (
     "ニュースは以上となります。"
@@ -89,6 +104,7 @@ def chunk_sentences(text: str, limit: int = CHUNK_LIMIT) -> list:
 
 def synth(text: str, out_wav: str, speed: str) -> bool:
     """VOICEPEAK CLIで1チャンク合成（タイムアウト・1回リトライ付き）"""
+    text = apply_reading_fixes(text)
     cmd = [VOICEPEAK, "-s", text, "--narrator", NARRATOR,
            "--speed", speed, "--pitch", PITCH, "-o", out_wav]
     for attempt in (1, 2):
@@ -374,6 +390,15 @@ def process_notion(dry_run: bool = False) -> int:
         length = f"{float(m.group(1))/60:.1f}分" if m else "?"
         print(f"  ✅ 完成: {out_mp3}（{length}）")
 
+        # Google Drive試聴フォルダへコピー（スマホから試聴できる）
+        try:
+            import shutil
+            os.makedirs(DRIVE_AUDITION, exist_ok=True)
+            shutil.copy(out_mp3, os.path.join(DRIVE_AUDITION, os.path.basename(out_mp3)))
+            print("  ☁️ Drive試聴フォルダへコピー")
+        except Exception as e:
+            print(f"  ⚠ Driveコピー失敗: {e}")
+
         # 公開はしない＝翔太さんの試聴チェックを挟む（二段階制 2026-07-06）
         # mp3パスをNotionに記録し、Status(Podcast)を「試聴待ち」へ。
         # 試聴してOKなら手動で「公開待ち」に変更→次回実行時に自動公開。
@@ -398,7 +423,9 @@ def process_notion(dry_run: bool = False) -> int:
             print(f"  ⚠ ステータス更新失敗: {e}（Notion側に「試聴待ち」オプションが必要）")
 
         send_mail(f"【試聴依頼】{title[:50]}（{length}）",
-                  f"音声が完成しました。試聴してください。\n\nファイル: {out_mp3}\n"
+                  f"音声が完成しました。試聴してください。\n\n"
+                  f"スマホ: Google Drive → CrossHealth → Podcast試聴\n"
+                  f"Mac: {out_mp3}\n"
                   f"AI検品: {qc_note or '合格'}\n\n"
                   f"OKなら Notion の Status(Podcast) を「公開待ち」に変更\n"
                   f"→ 次の定時実行（毎時）で自動的にPodcastフィードへ公開されます。")
