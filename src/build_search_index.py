@@ -23,6 +23,7 @@ import config  # noqa: E402
 DB = os.path.expanduser("~/crosshealth_search.db")
 ARCHIVE = os.path.expanduser("~/chuikyo_archive")
 SHINGIKAI_ARCHIVE = os.path.expanduser("~/shingikai_archive")
+PREF_ARCHIVE = os.path.expanduser("~/pref_minutes_archive")
 H = {"Authorization": f"Bearer {config.NOTION_API_KEY}",
      "Notion-Version": "2022-06-28", "Content-Type": "application/json"}
 
@@ -129,6 +130,31 @@ def sync_shingikai(db):
     print(f"✓ shingikai: 追加{added}件（計{n}会合・{(chars or 0)//10000}万字）")
 
 
+def sync_pref_minutes(db):
+    db.execute("""CREATE TABLE IF NOT EXISTS pref_minutes (
+        slug TEXT PRIMARY KEY, pref TEXT, council TEXT, label TEXT,
+        year INTEGER, kai INTEGER, url TEXT, chars INTEGER, body TEXT)""")
+    db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS pref_minutes_fts USING fts5(body, content=pref_minutes, tokenize='trigram')")
+    have = {r[0] for r in db.execute("SELECT slug FROM pref_minutes")}
+    added = 0
+    for f in glob.glob(os.path.join(PREF_ARCHIVE, "*", "*.json")):
+        pref_key = os.path.basename(os.path.dirname(f))
+        slug = f"{pref_key}/{os.path.basename(f)[:-5]}"
+        if slug in have:
+            continue
+        d = json.load(open(f, encoding='utf-8'))
+        db.execute("INSERT INTO pref_minutes VALUES (?,?,?,?,?,?,?,?,?)",
+                   (slug, d.get('pref', ''), d.get('council', ''), d.get('label', ''),
+                    d.get('year'), d.get('kai'), d.get('url', ''),
+                    d.get('chars', 0), d.get('text', '')))
+        added += 1
+    if added:
+        db.execute("INSERT INTO pref_minutes_fts(pref_minutes_fts) VALUES('rebuild')")
+    db.commit()
+    n, chars = db.execute("SELECT COUNT(*), SUM(chars) FROM pref_minutes").fetchone()
+    print(f"✓ pref_minutes: 追加{added}件（計{n}件・{(chars or 0)//10000}万字）")
+
+
 def main():
     only = [a for a in sys.argv[1:] if a.endswith('-only')]
     db = sqlite3.connect(DB)
@@ -138,6 +164,8 @@ def main():
         sync_chuikyo(db)
     if not only or '--shingikai-only' in only:
         sync_shingikai(db)
+    if not only or '--pref-only' in only:
+        sync_pref_minutes(db)
     db.close()
     print(f"→ {DB} ({os.path.getsize(DB)//1024//1024}MB)")
 
