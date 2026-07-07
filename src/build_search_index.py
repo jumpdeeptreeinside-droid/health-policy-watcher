@@ -165,8 +165,9 @@ def main():
         db.commit()
         # 新しい会合の発言構造化（Phase2・差分のみ処理）
         import subprocess
-        subprocess.run([sys.executable,
-                        os.path.join(os.path.dirname(os.path.abspath(__file__)), "chuikyo_structurize.py")])
+        _here = os.path.dirname(os.path.abspath(__file__))
+        subprocess.run([sys.executable, os.path.join(_here, "chuikyo_structurize.py")])
+        subprocess.run([sys.executable, os.path.join(_here, "chuikyo_members.py")])
     if not only or '--shingikai-only' in only:
         sync_shingikai(db)
     if not only or '--pref-only' in only:
