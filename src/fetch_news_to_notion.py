@@ -860,23 +860,27 @@ class NotionUploader:
             return False
 
     def ensure_category_property(self) -> None:
-        """Notion DB に Category セレクトプロパティが無ければ作成する（初回のみ・self-healing）"""
+        """Notion DB に Category セレクトプロパティが無ければ作成する（生API・作成後に実在確認まで）"""
+        import requests as _rq
+        headers = {"Authorization": f"Bearer {NOTION_API_KEY}",
+                   "Notion-Version": "2022-06-28", "Content-Type": "application/json"}
+        base = f"https://api.notion.com/v1/databases/{self.database_id}"
         try:
-            db = self.notion.databases.retrieve(self.database_id)
+            db = _rq.get(base, headers=headers, timeout=30).json()
             if 'Category' in db.get('properties', {}):
                 return
-            self.notion.databases.update(
-                self.database_id,
-                properties={
-                    "Category": {"select": {"options": [
-                        {"name": "国内・診療", "color": "red"},
-                        {"name": "国内・保健", "color": "orange"},
-                        {"name": "国際・日本関連", "color": "blue"},
-                        {"name": "国際・その他", "color": "gray"},
-                    ]}}
-                },
-            )
-            logger.info("Notion DB に Category プロパティを作成しました")
+            _rq.patch(base, headers=headers, timeout=30, json={
+                "properties": {"Category": {"select": {"options": [
+                    {"name": "国内・診療", "color": "red"},
+                    {"name": "国内・保健", "color": "orange"},
+                    {"name": "国際・日本関連", "color": "blue"},
+                    {"name": "国際・その他", "color": "gray"},
+                ]}}}}).raise_for_status()
+            db2 = _rq.get(base, headers=headers, timeout=30).json()
+            if 'Category' in db2.get('properties', {}):
+                logger.info("Notion DB に Category プロパティを作成しました（実在確認済み）")
+            else:
+                logger.warning("Category プロパティ作成のレスポンスは正常だが実在確認できず")
         except Exception as e:
             logger.warning(f"Category プロパティの確認/作成に失敗: {e}")
 
@@ -923,6 +927,19 @@ class NotionUploader:
             return new_page['id']
 
         except Exception as e:
+            # 分類メタデータが原因なら、記事登録を優先してCategory無しで再試行
+            if "Category" in str(e) and "Category" in properties:
+                logger.warning(f"Category起因の失敗→Category無しで再試行: {e}")
+                properties.pop("Category", None)
+                try:
+                    new_page = self.notion.pages.create(
+                        parent={"database_id": self.database_id},
+                        properties=properties,
+                    )
+                    return new_page['id']
+                except Exception as e2:
+                    logger.error(f"Notion追加エラー(再試行後): {e2}")
+                    return None
             logger.error(f"Notion追加エラー: {e}")
             return None
 
