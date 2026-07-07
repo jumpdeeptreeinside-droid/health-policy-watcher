@@ -530,11 +530,11 @@ class NotionWordPressUploader:
     def update_podcast_description(self, page_id: str, web_url: str) -> bool:
         """Notion ページの PodcastDescription プロパティを更新する"""
         text = (
-            f"引用元・解説記事\n▶️{web_url}\n"
-            "メインパーソナリティ「盤条サク」とは\n"
-            "▶️https://note.com/ski_sph/n/n094276c4eb39\n"
-            "「医療政策ウォッチャー」とは\n"
-            "▶️https://note.com/ski_sph/n/nc3557f4b055f"
+            f"解説記事（全文はこちら）\n▶️{web_url}\n"
+            "「医療政策ウォッチャー」公式サイト\n"
+            "▶️https://www.crosshealthjp.org/watcher\n"
+            "メンバーシップ（ウィークリーレポート全文）\n"
+            "▶️https://www.crosshealthjp.org/membership"
         )
         api_url = f"{self.notion_base}/pages/{page_id}"
         payload = {

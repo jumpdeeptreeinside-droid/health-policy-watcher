@@ -154,6 +154,10 @@ def build_episode(title: str, body_text: str, out_mp3: str) -> bool:
         ("ed", ED_TEXT, SPEED_TALK),
     ]
     wavs = []
+    # 提供ジングル（サクの提供コール+BGM birds_01・固定アセット 2026-07-07 木内さん発案）
+    sponsor = os.path.expanduser("~/obsidian-brain/_podcast/assets/sponsor.wav")
+    if os.path.exists(sponsor):
+        wavs.append(sponsor)
     for tag, text, speed in seq:
         w = os.path.join(WORK_DIR, f"ep_{tag}.wav")
         ok = synth_long(text, w, speed, tag) if len(text) > CHUNK_LIMIT else synth(text, w, speed)
@@ -168,7 +172,8 @@ def build_episode(title: str, body_text: str, out_mp3: str) -> bool:
                         "-codec:a", "libmp3lame", "-b:a", "128k", out_mp3],
                        capture_output=True, text=True)
     for w in wavs + [lst]:
-        os.remove(w)
+        if not w.endswith("assets/sponsor.wav"):
+            os.remove(w)
     if r.returncode != 0:
         print(f"  ✗ mp3変換失敗: {r.stderr[-200:]}")
         return False

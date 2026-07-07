@@ -68,13 +68,15 @@ def main():
     if not pages:
         return
 
-    items, page_ids = [], []
+    items, page_ids, links = [], [], []
     for p in pages:
         title = nw.get_property_value(p, 'Title') or ''
         blocks = nw.fetch_page_blocks(p['id'])
         body = nw.converter.convert(blocks) if blocks else ''
         items.append((title, body))
         page_ids.append(p['id'])
+        weburl = (p['properties'].get('URL(Web)', {}) or {}).get('url') or ''
+        links.append((title, weburl))
 
     headlines = gemini_headlines(items)
 
@@ -100,8 +102,17 @@ def main():
     resp.raise_for_status()
     new_page = resp.json()
     page_url = new_page.get("url", "")
+    desc_lines = ["本日の海外の医療・保健ニュースまとめ。各記事の全文はこちら："]
+    for t, u in links:
+        desc_lines.append(f"・{t[:60]}")
+        if u:
+            desc_lines.append(f"　▶️{u}")
+    desc_lines.append("「医療政策ウォッチャー」公式サイト ▶️https://www.crosshealthjp.org/watcher")
     requests.patch(f"https://api.notion.com/v1/pages/{new_page['id']}", headers=headers, timeout=30,
-                   json={"properties": {"Script(Podcast)": {"url": page_url}}}).raise_for_status()
+                   json={"properties": {
+                       "Script(Podcast)": {"url": page_url},
+                       "PodcastDescription": {"rich_text": [{"text": {"content": "\n".join(desc_lines)[:1900]}}]},
+                   }}).raise_for_status()
     logger.info(f"✅ まとめエピソード作成: {ep_title}")
 
     # 元記事は個別音声化しない＝完了へ
