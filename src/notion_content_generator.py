@@ -186,7 +186,7 @@ AUDIO_DEPTH_BY_CATEGORY = {
     "国内・診療": "full",
     "国内・保健": "medium",
     "国際・日本関連": "short",
-    "国際・その他": "brief",
+    "国際・その他": "short",
 }
 DEFAULT_AUDIO_DEPTH = "full"  # 未分類は安全側（詳細）
 
