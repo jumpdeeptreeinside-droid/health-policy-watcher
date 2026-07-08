@@ -56,9 +56,12 @@ PREFS = {
             "https://www.pref.kyoto.jp/iryo/block4/index.html",
             # 京都府医療審議会
             "https://www.pref.kyoto.jp/shingikai/iryo-03/",
-            # 圏域（山城南・山城北。他圏域は振興局ページが散在＝順次追加）
+            # 圏域（山城南・山城北・丹後・中丹・南丹）
             "https://www.pref.kyoto.jp/yamashiro/ho-minami/chiikiiryo.html",
             "https://www.pref.kyoto.jp/y-ho-kita/iryokyougikai-kousoucyousei.html",
+            "https://www.pref.kyoto.jp/tango/ho-tango/tangotiikiiryoukousou.html",
+            "https://www.pref.kyoto.jp/chutan/ehoken/tyutanshiikiiryou.html",
+            "https://www.pref.kyoto.jp/nantan/ho-kikaku/r5-3nantanchiikiiryoukousoucyouseikaigigaiyou.html",
         ],
     },
     "hyogo": {
