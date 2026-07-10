@@ -123,6 +123,9 @@ def to_yomi(text: str) -> str:
     t = re.sub(r"([0-9]{4})年", lambda m: num_to_yomi(m.group(1)) + "ねん", t)
     t = re.sub(r"令和([0-9]{1,2})", lambda m: "れいわ" + num_to_yomi(m.group(1)), t)
 
+    # 医療カウンターの読み固定（数字が算用のうちに処理）。床=しょう（病床）。必要に応じ追記。
+    t = re.sub(r"([0-9][0-9,]*)\s*床", lambda m: num_to_yomi(m.group(1)) + "しょう", t)
+
     # パーセント（小数対応）
     t = re.sub(r"([0-9][0-9,]*)\.([0-9]+)\s*(?:%|％|パーセント)",
                lambda m: decimal_to_yomi(m.group(1), m.group(2)) + "パーセント", t)
