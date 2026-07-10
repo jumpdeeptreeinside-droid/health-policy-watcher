@@ -45,6 +45,8 @@ def gemini_headlines(items: list) -> list:
         "あなたはニュース番組の原稿作成者です。以下の各記事を、音声で読み上げる1〜2文のヘッドライン原稿にしてください。\n"
         "ルール: 事実のみ（記事にない情報は追加しない）／話し言葉のデスマス調／固有名詞・数字は変更しない／"
         "一文は短く／句点（。）ごとに改行。\n"
+        "英語を残さない（最重要）: 機関名・薬剤名・略語はすべて日本語かカタカナに（WHO→世界保健機関、"
+        "AMR→薬剤耐性、RUXOLITINIB→ルキソリチニブ 等）。アルファベットのまま残さないこと。\n"
         f"JSON配列のみ出力（記事数={len(items)}・インデックス対応）: [\"ヘッドライン1\", ...]\n\n" + blocks
     )
     raw = model.generate_content(prompt).text.strip().strip('`').removeprefix('json').strip()
@@ -85,6 +87,8 @@ def main():
     lines = [f"本日の海外の医療・保健ニュースを、まとめてお届けします。"]
     for i, h in enumerate(headlines):
         lines.append(h.strip())
+        if i < len(headlines) - 1:
+            lines.append("続いてのニュースです。")  # 見出し間に一拍おき、速度・内容の混線を防ぐ
     lines.append("詳しくは、クロスヘルス公式サイトの記事をご覧ください。")
 
     # まとめ行をDBに作成（台本は自ページのchildrenに置き、Script(Podcast)は自分を指す）

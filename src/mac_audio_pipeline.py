@@ -59,6 +59,13 @@ READING_FIXES = [
 
 
 def apply_reading_fixes(text: str) -> str:
+    # 数字・日付・頻出略語を決定論的に読みへ変換（2026-07-10・A/B/C検証で抑揚劣化なしを確認）。
+    # 英語の固有名詞は原稿生成側で日本語化済み想定（notion_content_generatorのプロンプト）。
+    try:
+        from yomi_preprocess import to_yomi
+        text = to_yomi(text)
+    except Exception:
+        pass
     for pat, rep in READING_FIXES:
         text = re.sub(pat, rep, text)
     return text
