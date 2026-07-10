@@ -153,13 +153,16 @@ def chunk_sentences(text: str, limit: int = CHUNK_LIMIT) -> list:
 
 
 def synth(text: str, out_wav: str, speed: str) -> bool:
-    """VOICEPEAK CLIで1チャンク合成（タイムアウト・1回リトライ付き）"""
-    text = apply_reading_fixes(text)
+    """VOICEPEAK CLIで1チャンク合成（タイムアウト・1回リトライ付き）。
+    ※読みの変換(apply_reading_fixes)はチャンク分割前に呼び出し側で済ませる（分割長の計算を正しくするため）。"""
     cmd = [VOICEPEAK, "-s", text, "--narrator", NARRATOR,
            "--speed", speed, "--pitch", PITCH, "-o", out_wav]
+    # VOICEPEAK CLIは呼び出し元の環境変数(DYLD/locale)干渉でiconv_open失敗することがある。
+    # HOME/PATHのみのクリーン環境で起動して安定化（本番launchdの最小環境と同等・無影響）。
+    _clean_env = {"HOME": os.path.expanduser("~"), "PATH": "/opt/homebrew/bin:/usr/bin:/bin"}
     for attempt in (1, 2):
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=SYNTH_TIMEOUT)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=SYNTH_TIMEOUT, env=_clean_env)
             if os.path.exists(out_wav) and os.path.getsize(out_wav) > 1000:
                 return True
             print(f"  ⚠ 合成出力なし (試行{attempt}): {r.stderr[-120:] if r.stderr else ''}")
@@ -172,6 +175,7 @@ def synth(text: str, out_wav: str, speed: str) -> bool:
 def synth_long(text: str, out_wav: str, speed: str, tag: str) -> bool:
     """長文をチャンク合成して連結"""
     os.makedirs(WORK_DIR, exist_ok=True)
+    text = apply_reading_fixes(text)  # 数字・読みを先に展開→その長さで分割
     chunks = chunk_sentences(text)
     print(f"  {tag}: {len(text)}字 → {len(chunks)}チャンク")
     parts = []
@@ -210,7 +214,9 @@ def build_episode(title: str, body_text: str, out_mp3: str) -> bool:
         wavs.append(sponsor)
     for tag, text, speed in seq:
         w = os.path.join(WORK_DIR, f"ep_{tag}.wav")
-        ok = synth_long(text, w, speed, tag) if len(text) > CHUNK_LIMIT else synth(text, w, speed)
+        text_expanded = apply_reading_fixes(text)  # 展開後の長さで分岐判定
+        ok = (synth_long(text, w, speed, tag) if len(text_expanded) > CHUNK_LIMIT
+              else synth(text_expanded, w, speed))
         if not ok:
             return False
         wavs.append(w)
