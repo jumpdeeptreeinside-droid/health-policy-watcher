@@ -58,6 +58,42 @@ READING_FIXES = [
 ]
 
 
+# 緑さんの「読み間違いメモ」スプレッドシート（Drive・毎回の生成で最新を自動取得）
+# 翔太さんがシートを「リンクを知る全員：閲覧可」にすると export?format=csv が認証なしで取れる。
+READING_SHEET_ID = "1adDCmMJ3bgFZHAOJjGzkNuRDPlZDqLtvD-APsZjl9ic"
+READING_SHEET_CSV = f"https://docs.google.com/spreadsheets/d/{READING_SHEET_ID}/export?format=csv"
+_OVERRIDES_CACHE = os.path.expanduser("~/health-policy-watcher/output/reading_overrides.json")
+_READING_OVERRIDES = {}  # {誤読語: 正しい読み(かな)} 生成開始時に load_reading_overrides() で満たす
+
+
+def load_reading_overrides() -> dict:
+    """緑さんのシートから 語→読み を取得。失敗時はキャッシュ→空でフェイルセーフ（生成は止めない）。"""
+    import urllib.request, csv, io
+    pairs = {}
+    try:
+        with urllib.request.urlopen(READING_SHEET_CSV, timeout=15) as r:
+            text = r.read().decode("utf-8")
+        rows = list(csv.reader(io.StringIO(text)))
+        for row in rows[1:]:  # 1行目=ヘッダ
+            if len(row) < 4:
+                continue
+            date, word, reading = (row[0] or ""), row[2].strip(), row[3].strip()
+            if not word or not reading:
+                continue
+            if "（例）" in date or "例）" in date:  # 見本行はスキップ
+                continue
+            pairs[word] = reading
+        json.dump(pairs, open(_OVERRIDES_CACHE, "w"), ensure_ascii=False, indent=1)
+        print(f"  📖 読み間違いメモ: {len(pairs)}語を反映（緑さんシート）")
+    except Exception as e:
+        try:
+            pairs = json.load(open(_OVERRIDES_CACHE))
+            print(f"  📖 読み間違いメモ: シート取得失敗→キャッシュ{len(pairs)}語で継続（{e}）")
+        except Exception:
+            print(f"  📖 読み間違いメモ: 取得もキャッシュも無し・組込辞書のみで継続（{e}）")
+    return pairs
+
+
 def apply_reading_fixes(text: str) -> str:
     # 数字・日付・頻出略語を決定論的に読みへ変換（2026-07-10・A/B/C検証で抑揚劣化なしを確認）。
     # 英語の固有名詞は原稿生成側で日本語化済み想定（notion_content_generatorのプロンプト）。
@@ -68,6 +104,9 @@ def apply_reading_fixes(text: str) -> str:
         pass
     for pat, rep in READING_FIXES:
         text = re.sub(pat, rep, text)
+    # 緑さんの読み間違いメモを最終適用（語を正しい読みへ単純置換・長い語優先）
+    for word in sorted(_READING_OVERRIDES, key=len, reverse=True):
+        text = text.replace(word, _READING_OVERRIDES[word])
     return text
 
 
@@ -353,6 +392,8 @@ def process_notion(dry_run: bool = False) -> int:
         pass
 
     nw = Reader()
+    global _READING_OVERRIDES
+    _READING_OVERRIDES = load_reading_overrides()  # 毎回の生成で緑さんシートの最新を取得
     pages = nw.query_database({"property": "Status(Podcast)", "status": {"equals": "音声化待ち"}})
     print(f"音声化待ち: {len(pages)}件")
     done = 0
