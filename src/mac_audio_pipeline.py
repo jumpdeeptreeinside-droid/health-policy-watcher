@@ -160,7 +160,7 @@ def synth(text: str, out_wav: str, speed: str) -> bool:
     # VOICEPEAK CLIは呼び出し元の環境変数(DYLD/locale)干渉でiconv_open失敗することがある。
     # HOME/PATHのみのクリーン環境で起動して安定化（本番launchdの最小環境と同等・無影響）。
     _clean_env = {"HOME": os.path.expanduser("~"), "PATH": "/opt/homebrew/bin:/usr/bin:/bin"}
-    for attempt in (1, 2):
+    for attempt in (1, 2, 3):
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=SYNTH_TIMEOUT, env=_clean_env)
             if os.path.exists(out_wav) and os.path.getsize(out_wav) > 1000:
@@ -168,7 +168,7 @@ def synth(text: str, out_wav: str, speed: str) -> bool:
             print(f"  ⚠ 合成出力なし (試行{attempt}): {r.stderr[-120:] if r.stderr else ''}")
         except subprocess.TimeoutExpired:
             print(f"  ⚠ 合成タイムアウト (試行{attempt})")
-        time.sleep(3)
+        time.sleep(3 * attempt)
     return False
 
 
@@ -512,27 +512,49 @@ def process_notion(dry_run: bool = False) -> int:
         page_id = page.get("id")
         title = nw.get_property_value(page, "Title") or "タイトルなし"
         audio = nw.get_property_value(page, "AudioPath") or ""
+        # launchd（バックグラウンド）は Google Drive(CloudStorage) を読めない（macOS TCC）。
+        # AudioPath が Drive 等を指していても、ローカル正本(OUT_DIR)に同名mp3があればそちらを使う。
+        # （2026-07-15: これが無いと自動公開が PermissionError で毎回全滅していた）
+        if audio:
+            local = os.path.join(OUT_DIR, os.path.basename(audio))
+            if os.path.exists(local):
+                audio = local
         if not audio or not os.path.exists(audio):
-            print(f"  ⏭ スキップ({title[:40]}): AudioPathのmp3が見つかりません: {audio}")
+            print(f"  ⏭ スキップ({title[:40]}): mp3が見つかりません: {audio}")
             continue
         if dry_run:
             print(f"  [dry-run] 公開予定: {title[:50]}")
             continue
-        desc = nw.get_property_value(page, "PodcastDescription") or ""
-        url = publish_episode(audio, title, desc)
-        if not url:
-            continue
-        import requests
+        # 1件の失敗で全体を止めない（各回を try/except で独立させる・2026-07-15）
         try:
-            requests.patch(f"{nw.notion_base}/pages/{page_id}",
-                           headers=nw.notion_headers,
-                           json={"properties": {"Status(Podcast)": {"status": {"name": "完了"}}}},
-                           timeout=30).raise_for_status()
-            print("  ✅ Notion Status(Podcast) → 完了")
+            desc = nw.get_property_value(page, "PodcastDescription") or ""
+            url = publish_episode(audio, title, desc)
+            if not url:
+                continue
+            import requests
+            try:
+                requests.patch(f"{nw.notion_base}/pages/{page_id}",
+                               headers=nw.notion_headers,
+                               json={"properties": {"Status(Podcast)": {"status": {"name": "完了"}}}},
+                               timeout=30).raise_for_status()
+                print("  ✅ Notion Status(Podcast) → 完了")
+            except Exception as e:
+                print(f"  ⚠ ステータス更新失敗: {e}")
+            send_mail(f"【公開完了】{title[:50]}", f"Podcastフィードに公開しました。\n{url}\n各プラットフォームには数時間内に反映されます。")
+            done += 1
+            # 公開成功 → ステージング(ローカル正本＋Drive試聴)を自動削除。
+            # 恒久保存はフィード側(crosshealthjp/public/podcast/audio・git管理)にあるため不要（2026-07-15）。
+            # ※launchdはDriveを消せない(権限)ので、Drive分はbest-effort（失敗しても無視）。
+            for stale in (audio, os.path.join(DRIVE_AUDITION, os.path.basename(audio))):
+                try:
+                    if stale and os.path.exists(stale):
+                        os.remove(stale)
+                        print(f"  🗑 ステージング削除: {os.path.basename(stale)}")
+                except Exception as e:
+                    print(f"  ⚠ 削除スキップ({os.path.basename(stale)}): {e}")
         except Exception as e:
-            print(f"  ⚠ ステータス更新失敗: {e}")
-        send_mail(f"【公開完了】{title[:50]}", f"Podcastフィードに公開しました。\n{url}\n各プラットフォームには数時間内に反映されます。")
-        done += 1
+            print(f"  ✗ 公開失敗({title[:40]}): {e}")
+            continue
     return done
 
 
