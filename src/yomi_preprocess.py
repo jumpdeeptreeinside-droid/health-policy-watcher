@@ -125,6 +125,27 @@ def to_yomi(text: str) -> str:
 
     # 医療カウンターの読み固定（数字が算用のうちに処理）。床=しょう（病床）。必要に応じ追記。
     t = re.sub(r"([0-9][0-9,]*)\s*床", lambda m: num_to_yomi(m.group(1)) + "しょう", t)
+    # 万+千 の複合（例 2万3千件→にまんさんぜんけん）。せんのeuphony(1いっ/3さん/8はっ)込み。カウンターも同時に。
+    def _sen(nstr):
+        n = int(nstr); return {1: "いっせん", 3: "さんぜん", 8: "はっせん"}.get(n, num_to_yomi(nstr) + "せん")
+    _CTRALL = {"人": "にん", "名": "めい", "件": "けん", "組": "くみ", "": ""}
+    t = re.sub(r"([0-9]+)万([0-9])千\s*(人|名|件|組)?",
+               lambda m: num_to_yomi(m.group(1)) + "まん" + _sen(m.group(2)) + _CTRALL[m.group(3) or ""], t)
+    # 単独 N千+カウンター（例 8千人→はっせんにん）
+    t = re.sub(r"(?<![0-9万])([0-9])千\s*(人|名|件|組)",
+               lambda m: _sen(m.group(1)) + _CTRALL[m.group(2) or ""], t)
+    # 人（にん）: 数字+(万/億/兆)?+人 が「ひと」と誤読される問題の恒久対策。例 91万人→きゅうじゅういちまんにん
+    _UNITY = {"万": "まん", "億": "おく", "兆": "ちょう", "": ""}
+    t = re.sub(r"([0-9][0-9,]*)\s*(万|億|兆)?\s*人",
+               lambda m: num_to_yomi(m.group(1)) + _UNITY[m.group(2) or ""] + "にん", t)
+    # 読みが規則的なカウンター（euphony無し）。数字+(万/億/兆)?+単位。例 122名→ひゃくにじゅうにめい / 20対1
+    _CTR = {"名": "めい", "組": "くみ", "件": "けん"}
+    for _u, _y in _CTR.items():
+        t = re.sub(r"([0-9][0-9,]*)\s*(万|億|兆)?\s*" + _u,
+                   lambda m, y=_y: num_to_yomi(m.group(1)) + _UNITY[m.group(2) or ""] + y, t)
+    # 比率 N対M（例 20対1→にじゅうたいいち）
+    t = re.sub(r"([0-9][0-9,]*)\s*対\s*([0-9][0-9,]*)",
+               lambda m: num_to_yomi(m.group(1)) + "たい" + num_to_yomi(m.group(2)), t)
 
     # パーセント（小数対応）
     t = re.sub(r"([0-9][0-9,]*)\.([0-9]+)\s*(?:%|％|パーセント)",
