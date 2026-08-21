@@ -22,9 +22,21 @@ def transcribe(mp3_path: str) -> str:
     return r["text"]
 
 
+def _expand_units(t: str) -> str:
+    """「111万596」「4兆2,602億」を素の整数に開く。台本は素の数字、Whisperは万区切りで
+    書き起こすため、そのまま比較すると全て不一致になり検品が空振りしていた（2026-08-21）。"""
+    def _i(x):
+        return int(x.replace(",", "")) if x else 0
+    for unit, val in (("兆", 10**12), ("億", 10**8), ("万", 10**4)):
+        t = re.sub(rf"([0-9][0-9,]*)\s*{unit}\s*([0-9][0-9,]*)?",
+                   lambda m, v=val: str(_i(m.group(1)) * v + _i(m.group(2))), t)
+    return t
+
+
 def extract_numbers(text: str) -> list:
-    """テキストから数値列を抽出（カンマ・小数対応・出現順）"""
+    """テキストから数値列を抽出（カンマ・小数・万/億/兆区切り対応・出現順）"""
     t = text.translate(str.maketrans("０１２３４５６７８９", "0123456789")).translate(_KANJI_NUM)
+    t = _expand_units(t)
     nums = []
     for m in re.finditer(r"[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?", t):
         v = m.group(0).replace(",", "")
@@ -62,14 +74,20 @@ def gemini_text_diff(script: str, transcript: str) -> dict:
             "音声合成の読み間違いを検出してください。指摘対象は【事実が変わる誤り】のみ:\n"
             "数字・日付・固有名詞・単位の相違、文の脱落。\n"
             "書き起こし側の同音異字・句読点・かな漢字表記のゆらぎは誤りではありません。\n\n"
-            'JSONのみで回答: {"ok": true/false, "issues": [{"script": "台本側", "heard": "書き起こし側", "kind": "数字|日付|固有名詞|脱落"}], "note": "一言"}\n\n'
+            'JSONのみで回答: {"ok": true/false, "issues": [{"script": "台本側", "heard": "書き起こし側", '
+            '"word": "辞書に登録すべき語(なければ空)", "reading": "その正しい読み(カタカナ・なければ空)", '
+            '"kind": "数字|日付|固有名詞|脱落"}], "note": "一言"}\n\n'
             f"# 台本\n{script[:7000]}\n\n# 書き起こし\n{transcript[:7000]}"
         )
-        model = genai.GenerativeModel(getattr(config, "QC_MODEL", "gemini-2.0-flash"))
+        # 既定は mac_audio_pipeline と同じ最新エイリアス。世代名を直書きすると
+        # モデル引退時に404で落ち、下のexceptが ok=True を返して検品が黙って空振りする。
+        model = genai.GenerativeModel(getattr(config, "QC_MODEL", "gemini-flash-latest"))
         resp = model.generate_content(prompt)
         raw = resp.text.strip().strip("`").removeprefix("json").strip()
         return json.loads(raw)
     except Exception as e:
+        # 合格扱いで返すが、黙って通さない（モデル引退・鍵切れをログで気づけるように）
+        print(f"  ⚠ Gemini突合が実行できませんでした（数値照合のみで判定）: {str(e)[:120]}")
         return {"ok": True, "issues": [], "note": f"Gemini突合スキップ: {e}"}
 
 

@@ -17,7 +17,7 @@ Status(Podcast)を「音声化待ち」に戻して mac_audio_pipeline を回す
   python3 src/rework_flagged_episodes.py --folder "パス"    # 対象フォルダを指定
   python3 src/rework_flagged_episodes.py --archive          # 再生成後、旧mp3を _修正済_旧 へ退避
 """
-import argparse, glob, os, re, sys, unicodedata, shutil
+import argparse, fcntl, glob, os, re, sys, unicodedata, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault('WORDPRESS_URL', 'https://unused.invalid')
 os.environ.setdefault('WORDPRESS_USERNAME', 'u')
@@ -149,6 +149,13 @@ def main():
         return
 
     # 正規フローで合成（合成→AI検品→試聴フォルダ→Notion更新）
+    # 多重起動ガード: 毎時15分のlaunchdと重なると同じ回を二重処理する（mac_audio_pipeline.main と同じ鍵を取る）
+    lock = open("/tmp/crosshealth_audio_pipeline.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("\n⚠ 別のパイプラインが実行中です。Statusは戻したので、次の定時実行で合成されます。")
+        return
     print("\n🎙 合成パイプライン開始（各回: 合成→AI検品→Google Drive試聴フォルダ→Notion更新）…")
     from mac_audio_pipeline import process_notion
     done = process_notion(dry_run=False)

@@ -52,10 +52,11 @@ SYNTH_TIMEOUT = 180    # 1チャンクの合成タイムアウト（秒）
 DRIVE_AUDITION = os.path.expanduser(
     "~/Library/CloudStorage/GoogleDrive-tekutekuradio@gmail.com/マイドライブ/CrossHealth/Podcast試聴")
 
-# 読みの修正ルール（正規表現, 置換）。誤読が見つかったらここに追記（2026-07-07 木内さん指摘: 数字+人=にん）
-READING_FIXES = [
-    (r"([0-9０-９]+)人", r"\1にん"),
-]
+# 読みの修正ルール（正規表現, 置換）。
+# 旧: (r"([0-9０-９]+)人", r"\1にん") … 2026-07-07に「〇〇人→ひと」誤読の対策として入れたが、
+# 数字をかなに開くのをやめた今は「1人」が「いちにん」になってしまう（正しくは「ひとり」）。
+# 音声長で実測するとVOICEPEAKは 1人=ひとり と自前で正しく読むので削除した（2026-08-21）。
+READING_FIXES = []
 
 
 # 緑さんの「読み間違いメモ」スプレッドシート（Drive・毎回の生成で最新を自動取得）
@@ -64,6 +65,37 @@ READING_SHEET_ID = "1adDCmMJ3bgFZHAOJjGzkNuRDPlZDqLtvD-APsZjl9ic"
 READING_SHEET_CSV = f"https://docs.google.com/spreadsheets/d/{READING_SHEET_ID}/export?format=csv"
 _OVERRIDES_CACHE = os.path.expanduser("~/health-policy-watcher/output/reading_overrides.json")
 _READING_OVERRIDES = {}  # {誤読語: 正しい読み(かな)} 生成開始時に load_reading_overrides() で満たす
+
+
+# シートの語を素のreplaceで当てるのは危険だった（2026-08-21・2回目の試聴やり直しの主因）。
+#   「は」→「わ」  … 文中の全ての は を置換 → はち→わち / はじめに→わじめに / 半月板→わんげつばん
+#   「有」→「ゆうしせたい」… 有料老人ホーム→ゆうしせたい料老人ホーム
+#   「8年」→「はちねん」… 18年→1はちねん（数字の途中で当たる）
+# ＝1文字語・数字を含む語・読みが極端に長い語は置換に使わず、コード側(yomi_preprocess)で扱う。
+_KANA1 = set("あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん"
+             "がぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽぁぃぅぇぉっゃゅょー")
+
+
+def vet_overrides(pairs: dict):
+    """単純置換して安全な指摘だけを残す。危険なものは理由付きで弾く（＝黙って通さない）。"""
+    from yomi_preprocess import HARDWORDS
+    safe, rejected = {}, []
+    for w, r in pairs.items():
+        if w in HARDWORDS or w.strip("〇～〜") in HARDWORDS:
+            rejected.append((w, "コード側(yomi_preprocess.HARDWORDS)で対応済み"))
+        elif len(w) == 1 and (w in _KANA1 or w.isdigit()):
+            rejected.append((w, "1文字の かな/数字 は文中の別語まで壊す（例 は→わ で はち→わち）"))
+        elif any(c.isdigit() for c in w):
+            rejected.append((w, "数字を含む語は桁の途中で当たる（例 8年→はちねん が 18年→1はちねん）"))
+        elif len(w) == 1:
+            # 円→えん とすると「円滑」が「えん滑」に、園→えん で「公園」が「公えん」になる。
+            # 1文字語は助数詞(N床/N円)か難読語としてコード側で扱う。
+            rejected.append((w, "1文字の語は複合語を壊す（円滑→えん滑）。助数詞/難読語としてコード側で対応"))
+        elif "〇" in w or not w.strip("～〜"):
+            rejected.append((w, "〇〇 や ～ を含む雛形はそのままでは一致しない"))
+        else:
+            safe[w.strip("～〜")] = r.strip("～〜")
+    return safe, rejected
 
 
 def load_reading_overrides() -> dict:
@@ -86,8 +118,13 @@ def load_reading_overrides() -> dict:
             if "（例）" in date or "例）" in date:  # 見本行はスキップ
                 continue
             pairs[word] = reading
+        pairs, rejected = vet_overrides(pairs)
         json.dump(pairs, open(_OVERRIDES_CACHE, "w"), ensure_ascii=False, indent=1)
         print(f"  📖 読み間違いメモ: {len(pairs)}語を反映（緑さんシート）")
+        if rejected:
+            print(f"  ⚠ 単純置換に使えない指摘{len(rejected)}件＝コード側(yomi_preprocess)で対応する語:")
+            for w, why in rejected:
+                print(f"      {w}: {why}")
     except Exception as e:
         try:
             pairs = json.load(open(_OVERRIDES_CACHE))
@@ -110,6 +147,14 @@ def apply_reading_fixes(text: str) -> str:
     # 緑さんの読み間違いメモを最終適用（語を正しい読みへ単純置換・長い語優先）
     for word in sorted(_READING_OVERRIDES, key=len, reverse=True):
         text = text.replace(word, _READING_OVERRIDES[word])
+    # 読みに落ちなかった英字語＝台本側で直すべき箇所。黙って素読みさせず必ず出す。
+    try:
+        from yomi_preprocess import residual_latin
+        left = residual_latin(text)
+        if left:
+            print(f"  ⚠ 読みが未定義の英字語{len(left)}件（素読みされます・台本側で日本語化を）: {', '.join(left[:15])}")
+    except Exception:
+        pass
     return text
 
 
@@ -121,8 +166,20 @@ ED_TEXT = (
 )
 
 
+# 台本ページに人が書き込んだレビューメモ（例:「（以下、音声内にこのスクリプトに記載のない文章がある）」）。
+# 読み上げ対象ではないのに素通りして音声に乗っていた（2026-08-04・療養病床の回が2回やり直しになった一因）。
+REVIEW_NOTE = re.compile(r"^[（(].*(音声|スクリプト|台本|収録|修正|確認|要チェック|※).*[)）]$")
+
+
 def md_to_plain(md: str) -> str:
-    """台本Markdown→読み上げテキスト（見出し記号・装飾・URLを除去）"""
+    """台本Markdown→読み上げテキスト（見出し記号・装飾・URL・レビューメモを除去）"""
+    kept = []
+    for line in md.split("\n"):
+        if REVIEW_NOTE.match(line.strip()):
+            print(f"  ✂ レビューメモを除去（読み上げない）: {line.strip()[:50]}")
+            continue
+        kept.append(line)
+    md = "\n".join(kept)
     t = re.sub(r"^#.*$", "", md, flags=re.M)          # 見出し行（タイトルは別で読む）
     t = re.sub(r"\*\*?|__|`+", "", t)                  # 強調・コード
     t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", t)   # リンク→アンカー文字
@@ -152,6 +209,15 @@ def chunk_sentences(text: str, limit: int = CHUNK_LIMIT) -> list:
     return chunks
 
 
+def wav_seconds(path: str) -> float:
+    try:
+        import wave
+        with wave.open(path) as f:
+            return f.getnframes() / float(f.getframerate())
+    except Exception:
+        return 0.0
+
+
 def synth(text: str, out_wav: str, speed: str) -> bool:
     """VOICEPEAK CLIで1チャンク合成（タイムアウト・1回リトライ付き）。
     ※読みの変換(apply_reading_fixes)はチャンク分割前に呼び出し側で済ませる（分割長の計算を正しくするため）。"""
@@ -160,12 +226,22 @@ def synth(text: str, out_wav: str, speed: str) -> bool:
     # VOICEPEAK CLIは呼び出し元の環境変数(DYLD/locale)干渉でiconv_open失敗することがある。
     # HOME/PATHのみのクリーン環境で起動して安定化（本番launchdの最小環境と同等・無影響）。
     _clean_env = {"HOME": os.path.expanduser("~"), "PATH": "/opt/homebrew/bin:/usr/bin:/bin"}
+    # 前回の試行が残した中途半端なwavを「成功」と誤認しないよう、毎回消してから合成する。
+    # タイムアウトで殺されたVOICEPEAKが書きかけのwavを残し、次の試行が失敗しても
+    # サイズ判定だけで True を返していた＝本文が一文まるごと音声から欠落していた（2026-08-21）。
+    min_sec = 0.08 * len(text)          # 実測0.20秒/字。半分以下なら途中で切れている。
     for attempt in (1, 2, 3):
+        if os.path.exists(out_wav):
+            os.remove(out_wav)
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=SYNTH_TIMEOUT, env=_clean_env)
-            if os.path.exists(out_wav) and os.path.getsize(out_wav) > 1000:
-                return True
-            print(f"  ⚠ 合成出力なし (試行{attempt}): {r.stderr[-120:] if r.stderr else ''}")
+            if r.returncode == 0 and os.path.exists(out_wav) and os.path.getsize(out_wav) > 1000:
+                sec = wav_seconds(out_wav)
+                if sec >= min_sec:
+                    return True
+                print(f"  ⚠ 音声が短すぎる (試行{attempt}): {sec:.1f}秒 < 期待{min_sec:.1f}秒 → 再合成")
+            else:
+                print(f"  ⚠ 合成出力なし (試行{attempt}): rc={r.returncode} {r.stderr[-100:] if r.stderr else ''}")
         except subprocess.TimeoutExpired:
             print(f"  ⚠ 合成タイムアウト (試行{attempt})")
         time.sleep(3 * attempt)
@@ -338,28 +414,116 @@ def qc_audio(mp3_path: str, script_text: str) -> dict:
         return {"ok": True, "issues": [], "note": f"検品スキップ: {e}"}
 
 
-def add_dictionary_entries(issues: list) -> int:
-    """誤読語をVOICEPEAKユーザー辞書へ自動登録（既存エントリは上書きしない）"""
+QC_TRANSCRIPTS = os.path.expanduser("~/health-policy-watcher/output/qc_transcripts")
+
+
+def qc_episode(mp3_path: str, spoken_text: str, source_text: str, title: str) -> dict:
+    """検品（2026-08-21にWhisper方式へ切替）。
+
+    旧: Geminiにmp3を聴かせる（qc_audio）。数字の聞き逃しが多く、指摘の質が安定しなかった。
+    新: ローカルWhisperが「耳」、数値照合は決定論のPython、表現ゆらぎだけGeminiのテキスト比較。
+
+    数値の照合は「実際に読み上げたテキスト(spoken_text)」と突き合わせる。
+    台本(source_text)と比べると、前処理で意図的に直した表記（1012.2千人→101万2200人）が
+    毎回“欠落”として出てしまうため。前処理による表記変更は別枠で報告する。
+
+    🔴number_mismatchesは「誤読」ではなく「要確認」。今日の実測では、指摘された数値を
+    単文で合成し直すと全て正しく読めており（100668施設→10万668 等）、Whisperの
+    書き起こし癖だった。ここを誤読として辞書に流すと雑エントリの温床になるので流さない。
+    """
     try:
-        d = json.load(open(DIC_PATH, encoding="utf-8"))
+        from whisper_qc import qc as _wqc, extract_numbers
+    except Exception as e:
+        print(f"  ⚠ Whisper検品を読み込めずGemini方式にフォールバック: {e}")
+        return qc_audio(mp3_path, source_text)
+    try:
+        r = _wqc(mp3_path, spoken_text)
+    except Exception as e:
+        print(f"  ⚠ Whisper検品エラーのためGemini方式にフォールバック: {e}")
+        return qc_audio(mp3_path, source_text)
+
+    # 書き起こしを残す（あとで単文検証するときの元データ）
+    try:
+        os.makedirs(QC_TRANSCRIPTS, exist_ok=True)
+        fn = f"{datetime.now():%Y%m%d_%H%M}_{sanitize(title)}.txt"
+        open(os.path.join(QC_TRANSCRIPTS, fn), "w", encoding="utf-8").write(r.get("transcript", ""))
     except Exception:
-        return 0
+        pass
+
+    # 前処理で表記が変わった数値（意図した変換のはず）を分けて出す
+    src_n, spk_n = extract_numbers(source_text), extract_numbers(spoken_text)
+    pool = list(spk_n)
+    converted = []
+    for v in src_n:
+        if v in pool:
+            pool.remove(v)
+        else:
+            converted.append(v)
+    r["converted_numbers"] = converted
+    return r
+
+
+PENDING_DICT = os.path.expanduser("~/health-policy-watcher/output/dict_pending.json")
+
+# ユーザー辞書に入れてよい語の条件（2026-08-04）。自動登録が壊した実例:
+#   1文字 `日→ニチ` `人→ヒト` … 日本人→ニホンジン が登録済みでも「にちほんにん」に分断された
+#   文節  `抗菌薬の` `平均在院日数は91.7日で` … そこで区切り・間・アクセントが消える
+#   数字  `2026年7月30日` … 合成前に yomi_preprocess がかな化するので発火すらしない死蔵
+_NG_TAIL = r"(の|は|が|を|に|へ|と|や|も|から|まで|より|など|ため|こと|って|ます|です|ください)$"
+
+
+def dict_entry_ok(word: str, reading: str) -> tuple:
+    """(可否, 理由)。人が承認する前の足切り。"""
+    if not word or not reading:
+        return False, "語または読みが空"
+    if len(word) < 2:
+        return False, "1文字（複合語を分断する）"
+    if len(word) > 12:
+        return False, "長すぎ（句・文の登録）"
+    if re.search(r"[0-9０-９]", word):
+        return False, "数字を含む（合成前にかな化され発火しない）"
+    if re.search(_NG_TAIL, word):
+        return False, "助詞・活用形で終わる（文節の登録）"
+    if not re.sub(r"[^ァ-ヶー]", "", reading):
+        return False, "読みがカタカナでない"
+    return True, ""
+
+
+def queue_dictionary_entries(issues: list, title: str = "") -> int:
+    """検品が拾った誤読を『承認待ち』として貯める。辞書には書き込まない（2026-08-04）。
+
+    以前はここで dic.json へ直接 priority=9 / accentType=0 で自動登録していたが、
+    検品の合格率が5/78＝ほぼ常に何かを指摘する状態で、雑なエントリが積み上がり
+    抑揚と複合語を壊していた。人が承認したものだけを入れる運用に変える。
+    """
+    try:
+        pending = json.load(open(PENDING_DICT, encoding="utf-8"))
+    except Exception:
+        pending = []
+    known = {(p.get("word"), p.get("reading")) for p in pending}
+    try:
+        existing = {e.get("sur") for e in json.load(open(DIC_PATH, encoding="utf-8"))}
+    except Exception:
+        existing = set()
+
     added = 0
     for i in issues:
-        word, reading = i.get("word", ""), i.get("reading", "")
-        if not word or not reading or len(word) > 20:
+        word = (i.get("word") or "").strip()
+        reading = (i.get("reading") or "").strip()
+        if not word or not reading:
+            continue            # 検品が語を特定できなかった指摘（空行を貯めない）
+        if (word, reading) in known or word in existing:
             continue
-        if any(e.get("sur") == word for e in d):
-            continue
-        kata = re.sub(r"[^ァ-ヶー]", "", reading)
-        if not kata:
-            continue
-        d.append({"sur": word, "pron": kata, "pos": "Japanese_Futsuu_meishi",
-                  "priority": 9, "accentType": 0})
+        ok, why = dict_entry_ok(word, reading)
+        pending.append({"date": datetime.now().strftime("%Y-%m-%d"), "episode": title[:60],
+                        "word": word, "reading": reading, "heard": i.get("heard", ""),
+                        "登録可": ok, "却下理由": why, "承認": ""})
+        known.add((word, reading))
         added += 1
-        print(f"  📖 辞書自動登録: {word} → {kata}")
+        print(f"  📝 承認待ちへ: {word} → {reading}" + ("" if ok else f"（要注意: {why}）"))
     if added:
-        json.dump(d, open(DIC_PATH, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        os.makedirs(os.path.dirname(PENDING_DICT), exist_ok=True)
+        json.dump(pending, open(PENDING_DICT, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     return added
 
 
@@ -426,7 +590,11 @@ def process_notion(dry_run: bool = False) -> int:
             print("  ⏭ スキップ: Script(Podcast) にNotionページリンクがありません")
             continue
 
-        title = nw.fetch_page_title(script_page_id) or db_title
+        # Podcastのタイトルは記事タイトル(Article＆Script Title)を使う。
+        # 台本ページのタイトルは原資料名（「令和７(2025)年簡易生命表の概況」等）になっており、
+        # 番組名として配信されてしまっていた（翔太さん指摘 2026-08-21）。
+        title = (nw.get_property_value(page, "Article＆Script Title")
+                 or nw.fetch_page_title(script_page_id) or db_title)
         blocks = nw.fetch_page_blocks(script_page_id)
         md = nw.converter.convert(blocks)
         body = md_to_plain(md)
@@ -446,18 +614,28 @@ def process_notion(dry_run: bool = False) -> int:
             continue
 
         # ── AI検品（誤読検出→辞書自動登録→1回だけ再合成） ──
-        qc = qc_audio(out_mp3, f"{OP_TEXT}\n{title}\n{body}\n{ED_TEXT}")
+        # AI検品は「報告」だけにする（2026-08-04・翔太さん合意）。
+        # 自動辞書登録＋再合成は廃止＝雑エントリで抑揚と複合語を壊していたため。
+        # 指摘は output/dict_pending.json に貯め、人が承認したものだけ辞書へ入れる。
+        source_text = f"{OP_TEXT}\n{title}\n{body}\n{ED_TEXT}"
+        spoken_text = apply_reading_fixes(source_text)
+        qc = qc_episode(out_mp3, spoken_text, source_text, title)
         qc_note = qc.get("note", "")
-        if not qc.get("ok", True) and qc.get("issues"):
-            print(f"  🔍 AI検品: 指摘{len(qc['issues'])}件 → 辞書登録して再合成")
-            if add_dictionary_entries(qc["issues"]):
-                if build_episode(title, body, out_mp3):
-                    qc2 = qc_audio(out_mp3, f"{OP_TEXT}\n{title}\n{body}\n{ED_TEXT}")
-                    qc_note = f"自動修正{len(qc['issues'])}件→再検品: {qc2.get('note','')}"
-                else:
-                    qc_note = "再合成失敗（初版を試聴へ）"
+        miss = qc.get("number_mismatches", [])
+        conv = qc.get("converted_numbers", [])
+        issues = qc.get("issues", [])
+        if conv:
+            print(f"  ↩ 前処理で表記変換: {len(conv)}件 {conv[:6]}")
+        if miss:
+            # 誤読とは限らない（Whisperの書き起こし癖が多い）。人の耳で確かめる材料として出す。
+            print(f"  🔍 検品: 聞き取れなかった数値{len(miss)}件（要確認・誤読とは限らない）: {miss[:8]}")
+        if issues:
+            n = queue_dictionary_entries(issues, title)
+            print(f"  🔍 検品: 指摘{len(issues)}件 → 承認待ちに{n}件（辞書は変更せず）")
+        if not miss and not issues:
+            print(f"  🔍 検品: 合格（{qc_note}）")
         else:
-            print(f"  🔍 AI検品: 合格（{qc_note}）")
+            qc_note = f"数値要確認{len(miss)}件 / 指摘{len(issues)}件: {qc_note}"
 
         dur = subprocess.run(["afinfo", out_mp3], capture_output=True, text=True)
         m = re.search(r"estimated duration: ([\d.]+)", dur.stdout)
