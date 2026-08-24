@@ -824,6 +824,10 @@ class NewsCollector:
 class NotionUploader:
     """Notionデータベースにニュースをアップロードするクラス"""
 
+    # 重複チェックのリトライ設定（2026-08-24）
+    DUP_CHECK_RETRIES = 3
+    DUP_CHECK_BACKOFF = 3  # 秒。試行回数に比例して待つ（3秒→6秒）
+
     def __init__(self):
         if not NOTION_API_KEY or not NOTION_DATABASE_ID:
             raise ValueError("Notion API Key または Database ID が設定されていません。")
@@ -831,7 +835,7 @@ class NotionUploader:
         self.notion = Client(auth=NOTION_API_KEY)
         self.database_id = NOTION_DATABASE_ID
 
-    def check_url_exists(self, url: str) -> bool:
+    def check_url_exists(self, url: str) -> Optional[bool]:
         """
         指定されたURLが既にNotionデータベースに存在するかチェック
 
@@ -839,38 +843,48 @@ class NotionUploader:
             url: チェックするURL
 
         Returns:
-            存在する場合True、存在しない場合False
+            True  … 既に登録済み
+            False … 未登録（新規）
+            None  … 判定不能（Notion APIが応答しない）。呼び出し側は登録を見送ること。
+
+        2026-08-24: 以前は例外を握って False（＝未登録）を返していた。そのため Notion が
+        504 を返した朝に、登録済みの中医協議事録が新規扱いで再投入され、同じ回（第650回）の
+        要約が二重に生成された。一過性のエラーはリトライし、それでも駄目なら None を返して
+        登録を見送る（フェイルクローズ）。見送った記事は次回実行で拾い直される。
         """
-        try:
-            # URL(Source)プロパティでフィルタリング
-            # notion-client 2.x では query メソッドを直接使用
-            import requests
-            headers = {
-                "Authorization": f"Bearer {NOTION_API_KEY}",
-                "Notion-Version": "2022-06-28",
-                "Content-Type": "application/json"
-            }
-            
-            query_url = f"https://api.notion.com/v1/databases/{self.database_id}/query"
-            payload = {
-                "filter": {
-                    "property": "URL(Source)",
-                    "url": {
-                        "equals": url
-                    }
-                },
-                "page_size": 1
-            }
-            
-            response = requests.post(query_url, headers=headers, json=payload)
-            response.raise_for_status()
-            results = response.json()
-            
-            return len(results.get('results', [])) > 0
-            
-        except Exception as e:
-            logger.warning(f"重複チェックエラー: {e}")
-            return False
+        headers = {
+            "Authorization": f"Bearer {NOTION_API_KEY}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json",
+        }
+        query_url = f"https://api.notion.com/v1/databases/{self.database_id}/query"
+        payload = {
+            "filter": {"property": "URL(Source)", "url": {"equals": url}},
+            "page_size": 1,
+        }
+
+        last_err = None
+        for attempt in range(1, self.DUP_CHECK_RETRIES + 1):
+            try:
+                response = requests.post(query_url, headers=headers, json=payload, timeout=30)
+                # 429（レート制限）と5xxは一過性とみなしてリトライする
+                if response.status_code == 429 or response.status_code >= 500:
+                    raise requests.HTTPError(f"{response.status_code} {response.reason}")
+                response.raise_for_status()
+                return len(response.json().get("results", [])) > 0
+            except Exception as e:
+                last_err = e
+                if attempt < self.DUP_CHECK_RETRIES:
+                    wait = self.DUP_CHECK_BACKOFF * attempt
+                    logger.warning(
+                        f"重複チェック失敗({attempt}/{self.DUP_CHECK_RETRIES}): {e} → {wait}秒後に再試行"
+                    )
+                    time.sleep(wait)
+
+        logger.error(
+            f"重複チェック不能（{self.DUP_CHECK_RETRIES}回失敗）: {last_err} / URL={url} → 登録を見送ります"
+        )
+        return None
 
     def ensure_category_property(self) -> None:
         """Notion DB に Category セレクトプロパティが無ければ作成する（生API・作成後に実在確認まで）"""
@@ -989,17 +1003,30 @@ class NotionUploader:
 
         self.ensure_category_property()
 
-        stats = {"success": 0, "skip": 0, "fail": 0}
+        stats = {"success": 0, "skip": 0, "fail": 0, "unknown": 0}
 
         # 新規記事のみ抽出（重複除去）
         new_articles = []
         for article in articles:
-            if self.check_url_exists(article.url):
+            exists = self.check_url_exists(article.url)
+            if exists is None:
+                # 判定不能。登録すると二重投入になりうるので見送る（次回実行で拾い直す）
+                stats["unknown"] += 1
+            elif exists:
                 stats["skip"] += 1
             else:
                 new_articles.append(article)
 
-        logger.info(f"新規: {len(new_articles)}件 / スキップ: {stats['skip']}件")
+        logger.info(
+            f"新規: {len(new_articles)}件 / スキップ: {stats['skip']}件 / 判定不能: {stats['unknown']}件"
+        )
+        if stats["unknown"]:
+            logger.warning(
+                f"⚠ 重複チェックが{stats['unknown']}件で成立しませんでした（Notion API不調）。"
+                "該当記事は登録せず見送っています。次回実行で拾い直されます。"
+            )
+        if articles and stats["unknown"] == len(articles):
+            logger.error("⚠ 全件で重複チェックが不能でした。Notion API の状態を確認してください。")
 
         # Gemini で一括スコアリング（新規記事のみ）
         scores: List[dict] = []
@@ -1026,7 +1053,10 @@ class NotionUploader:
         
         logger.info("\n" + "=" * 50)
         logger.info("アップロード完了")
-        logger.info(f"成功: {stats['success']} 件 / スキップ: {stats['skip']} 件 / 失敗: {stats['fail']} 件")
+        logger.info(
+            f"成功: {stats['success']} 件 / スキップ: {stats['skip']} 件 / "
+            f"失敗: {stats['fail']} 件 / 判定不能: {stats['unknown']} 件"
+        )
         logger.info("=" * 50)
         
         return stats
