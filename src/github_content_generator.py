@@ -90,6 +90,23 @@ GMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD', '')
 NOTIFY_TO = "jump.deep.tree.inside@gmail.com"
 
 # ──────────────────────────────────────────────
+# PDFレーンの保護（2026-09-13）
+#
+# 背景: 「規制改革実施計画」(PDF 37本) と「医療費の地域差分析」(PDF 151本) が
+# 執筆待ち(pdf) の先頭に居座り、毎回 Gemini がトークン上限超過/接続断で落ちていた。
+# 失敗しても Status を変えずに continue していたため、同じページを1日3回引き直し、
+# 1回あたり約14分を空回りに使って後続のページに到達しないまま7月から詰まっていた。
+# （国内記事が9/8〜9/11にゼロだったのはこれが原因）
+# ──────────────────────────────────────────────
+# 1ページあたりに Gemini へ渡す PDF の上限。超えた分は切り捨て、必ずログに残す。
+MAX_PDF_FILES    = int(os.environ.get("MAX_PDF_FILES", "20"))
+MAX_PDF_TOTAL_MB = float(os.environ.get("MAX_PDF_TOTAL_MB", "40"))
+# 生成に失敗したページを列から外すためのステータス。
+# 🔴 Notion の「Status(コンテンツ作成)」に手で1つ追加しておく必要がある
+#    （status型の選択肢は Notion API からは作れない）。無い場合は警告を出して先へ進む。
+FAILED_STATUS = os.environ.get("FAILED_STATUS", "執筆失敗")
+
+# ──────────────────────────────────────────────
 # Gemini クライアント
 # ──────────────────────────────────────────────
 try:
@@ -650,6 +667,30 @@ class NotionAPI:
             return False
 
 # ──────────────────────────────────────────────
+# 失敗ページの後始末（2026-09-13）
+# ──────────────────────────────────────────────
+def park_failed_page(notion: "NotionAPI", page_id: str, title: str, reason: str) -> dict:
+    """生成に失敗したページを執筆待ちの列から外す。
+
+    Status を FAILED_STATUS に落とす。選択肢が Notion 側に無ければ落とせないので、
+    そのときは警告を出して「手で追加してほしい」と伝える（列には残るが、
+    空振り通知で気づける）。戻り値は通知に使う記録。
+    """
+    logger.error(f"  コンテンツ生成失敗: {reason}")
+    parked = notion.update_status(page_id, FAILED_STATUS)
+    if parked:
+        logger.info(f"  ✓ ステータス: 執筆待ち → {FAILED_STATUS}（列から外しました）")
+    else:
+        logger.warning(
+            f"  ⚠ ステータスを「{FAILED_STATUS}」にできませんでした。"
+            f"Notion の Status(コンテンツ作成) に選択肢「{FAILED_STATUS}」を追加してください"
+            "（status型の選択肢は API からは作れません）。"
+            "追加するまでこのページは毎回リトライされます。"
+        )
+    return {"title": title, "reason": reason, "parked": parked}
+
+
+# ──────────────────────────────────────────────
 # メール通知
 # ──────────────────────────────────────────────
 def send_factcheck_notification(processed_articles: list) -> None:
@@ -699,6 +740,46 @@ Status(コンテンツ作成) を「完了」に変更してください。
         logger.error(f"  メール送信失敗: {e}")
 
 
+def send_stall_notification(pending: int, failures: list) -> None:
+    """待ちはあるのに1本も生成できなかったときに知らせる（2026-09-13）。
+
+    このスクリプトは失敗を飲んで正常終了するので、GitHub Actions は
+    記事0本の日でも緑になる。9/8〜9/11に国内記事がゼロだったことに
+    誰も気づけなかったのはそのため。ここだけは必ず声を上げる。
+    """
+    import smtplib
+    from email.mime.text import MIMEText
+
+    lines = [f"  - {f['title'][:60]} … {f['reason']}"
+             f"{'' if f.get('parked') else '（列から外せていません）'}"
+             for f in failures] or ["  （失敗として記録されたページはありません）"]
+    body = (
+        "【医療政策ウォッチャー】コンテンツ自動生成が空振りしました\n\n"
+        f"執筆待ちが {pending} 件ありましたが、生成できた記事は 0 件です。\n\n"
+        "■ 失敗したページ\n" + "\n".join(lines) + "\n\n"
+        "よくある原因:\n"
+        "  - PDFが多すぎる/大きすぎる（上限を超えた分は切り捨てています）\n"
+        "  - Gemini 側のエラー（トークン上限・接続断）\n"
+        "  - Notion に「執筆失敗」ステータスが無く、同じページを引き直している\n"
+    )
+    if not (GMAIL_ADDRESS and GMAIL_APP_PASSWORD):
+        logger.warning("Gmail未設定のため空振り通知をスキップします")
+        logger.warning(body)
+        return
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = f"【要確認】コンテンツ自動生成が空振り（待ち{pending}件・生成0件）"
+    msg["From"] = GMAIL_ADDRESS
+    msg["To"] = NOTIFY_TO
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            server.sendmail(GMAIL_ADDRESS, NOTIFY_TO, msg.as_string())
+        logger.info(f"  空振り通知メール送信完了: {NOTIFY_TO}")
+    except Exception as e:
+        logger.error(f"  空振り通知の送信失敗: {e}")
+
+
 # ──────────────────────────────────────────────
 # MHLW クローラー（PDF ダウンロード）
 # ──────────────────────────────────────────────
@@ -707,10 +788,21 @@ def _sanitize_filename(text: str, max_len: int = 80) -> str:
     text = re.sub(r'[\\\/:*?"<>|]', "_", text)
     return text[:max_len].strip()
 
-def crawl_mhlw_page(page_url: str, download_dir: str) -> list[str]:
-    """MHLW ページから PDF をダウンロードし、保存パスのリストを返す"""
+def crawl_mhlw_page(
+    page_url: str,
+    download_dir: str,
+    max_files: int = MAX_PDF_FILES,
+    max_total_mb: float = MAX_PDF_TOTAL_MB,
+) -> list[str]:
+    """MHLW ページから PDF をダウンロードし、保存パスのリストを返す
+
+    max_files / max_total_mb を超える分は取得しない（Gemini のトークン上限対策）。
+    切り捨てた件数は必ずログに出す＝「全部読んだ」ように見えないようにする。
+    """
     logger.info(f"  クロール開始: {page_url}")
     downloaded: list[str] = []
+    total_bytes = 0
+    skipped_by_cap = 0
 
     try:
         resp = requests.get(page_url, timeout=60)
@@ -745,6 +837,11 @@ def crawl_mhlw_page(page_url: str, download_dir: str) -> list[str]:
         if not re.search(r"\.pdf", href, re.IGNORECASE):
             continue
 
+        # 上限に達したら以降は数えるだけ（何件落としたかを後でログに出す）
+        if len(downloaded) >= max_files or total_bytes >= max_total_mb * 1024 * 1024:
+            skipped_by_cap += 1
+            continue
+
         if re.match(r"^https?://", href, re.IGNORECASE):
             abs_url = href
         elif href.startswith("/"):
@@ -776,9 +873,16 @@ def crawl_mhlw_page(page_url: str, download_dir: str) -> list[str]:
                 f.write(pdf_resp.content)
             logger.info(f"    PDF ダウンロード完了: {os.path.basename(save_path)}")
             downloaded.append(save_path)
+            total_bytes += len(pdf_resp.content)
         except Exception as e:
             logger.warning(f"    PDF ダウンロード失敗 ({abs_url}): {e}")
 
+    if skipped_by_cap:
+        logger.warning(
+            f"  ⚠ 上限({max_files}件 / {max_total_mb:.0f}MB)に達したため "
+            f"{skipped_by_cap} 件の PDF を取得していません"
+            f"（使用: {len(downloaded)}件 / {total_bytes / 1024 / 1024:.1f}MB）"
+        )
     return downloaded
 
 # ──────────────────────────────────────────────
@@ -1171,6 +1275,8 @@ def process_pdf_pages(notion: NotionAPI) -> tuple:
     logger.info(f"{len(pages)} 件のページを検出")
     success = 0
     processed_articles: list = []
+    failures: list = []
+    rerouted: list = []
 
     for page in pages:
         page_id    = page["id"]
@@ -1186,7 +1292,14 @@ def process_pdf_pages(notion: NotionAPI) -> tuple:
         with tempfile.TemporaryDirectory() as tmpdir:
             pdf_paths = crawl_mhlw_page(source_url, tmpdir)
             if not pdf_paths:
+                # PDFを1本も拾えないページ（財務省の insideLink、HGPI など）は
+                # PDFレーンに置いても永久に空振りする。URLレーンへ送れば本文から書ける。
                 logger.warning(f"  PDF が見つかりませんでした: {source_url}")
+                if notion.update_status(page_id, "執筆待ち(url)"):
+                    logger.info("  ✓ ステータス: 執筆待ち(pdf) → 執筆待ち(url)（URLレーンへ送りました）")
+                    rerouted.append(title)
+                else:
+                    logger.error("  ✗ URLレーンへの付け替えに失敗")
                 continue
             logger.info(f"  {len(pdf_paths)} 件の PDF をダウンロード完了")
 
@@ -1194,7 +1307,7 @@ def process_pdf_pages(notion: NotionAPI) -> tuple:
         # tmpdir はここで自動削除される
 
         if not blog or not script:
-            logger.error("  コンテンツ生成失敗 - スキップ")
+            failures.append(park_failed_page(notion, page_id, title, "Gemini生成失敗（PDF）"))
             continue
 
         blog_pid, script_pid = save_to_notion(
@@ -1228,7 +1341,9 @@ def process_pdf_pages(notion: NotionAPI) -> tuple:
 
         time.sleep(3)
 
-    return success, processed_articles
+    if rerouted:
+        logger.info(f"  URLレーンへ送ったページ: {len(rerouted)} 件")
+    return success, processed_articles, failures, len(pages)
 
 
 def process_url_pages(notion: NotionAPI) -> tuple:
@@ -1240,6 +1355,7 @@ def process_url_pages(notion: NotionAPI) -> tuple:
     logger.info(f"{len(pages)} 件のページを検出")
     success = 0
     processed_articles: list = []
+    failures: list = []
 
     for page in pages:
         page_id    = page["id"]
@@ -1255,7 +1371,7 @@ def process_url_pages(notion: NotionAPI) -> tuple:
         blog, script, factcheck = generate_from_url(source_url)
 
         if not blog or not script:
-            logger.error("  コンテンツ生成失敗 - スキップ")
+            failures.append(park_failed_page(notion, page_id, title, "生成失敗（URL）"))
             continue
 
         blog_pid, script_pid = save_to_notion(
@@ -1289,7 +1405,7 @@ def process_url_pages(notion: NotionAPI) -> tuple:
 
         time.sleep(3)
 
-    return success, processed_articles
+    return success, processed_articles, failures, len(pages)
 
 
 def main() -> None:
@@ -1299,8 +1415,8 @@ def main() -> None:
 
     notion = NotionAPI(NOTION_API_KEY, NOTION_DATABASE_ID)
 
-    pdf_success, pdf_articles = process_pdf_pages(notion)
-    url_success, url_articles = process_url_pages(notion)
+    pdf_success, pdf_articles, pdf_failures, pdf_pending = process_pdf_pages(notion)
+    url_success, url_articles, url_failures, url_pending = process_url_pages(notion)
 
     all_processed = pdf_articles + url_articles
     if all_processed:
@@ -1308,9 +1424,18 @@ def main() -> None:
 
     logger.info("\n" + "=" * 60)
     logger.info("  処理完了サマリー")
-    logger.info(f"  PDF モード: {pdf_success} 件成功")
-    logger.info(f"  URL モード: {url_success} 件成功")
+    logger.info(f"  PDF モード: {pdf_success} 件成功 / 待ち {pdf_pending} 件")
+    logger.info(f"  URL モード: {url_success} 件成功 / 待ち {url_pending} 件")
     logger.info("=" * 60)
+
+    # 空振り検知（2026-09-13）: 待ちはあるのに1本も作れなかった実行は、
+    # 例外を飲んで正常終了するためワークフロー上は緑に見える。ここで必ず知らせる。
+    pending  = pdf_pending + url_pending
+    produced = pdf_success + url_success
+    failures = pdf_failures + url_failures
+    if pending and not produced:
+        logger.error(f"  ⚠ 空振り: 待ち {pending} 件に対して生成 0 件")
+        send_stall_notification(pending, failures)
 
 
 if __name__ == "__main__":
