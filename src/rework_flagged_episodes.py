@@ -85,6 +85,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-synth", action="store_true")
     ap.add_argument("--archive", action="store_true")
+    ap.add_argument("--no-publish", action="store_true",
+                    help="作り直しだけ行い、溜まっている「公開待ち」は配信しない")
     args = ap.parse_args()
 
     from notion_wordpress_uploader import NotionWordPressUploader
@@ -158,7 +160,7 @@ def main():
         return
     print("\n🎙 合成パイプライン開始（各回: 合成→AI検品→Google Drive試聴フォルダ→Notion更新）…")
     from mac_audio_pipeline import process_notion
-    done = process_notion(dry_run=False)
+    done = process_notion(dry_run=False, publish=not args.no_publish)
     print(f"\n🎉 完了: {done}件を再生成し、試聴フォルダへ配置しました。")
 
 

@@ -565,7 +565,7 @@ def sanitize(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', "", name)[:60].strip() or "episode"
 
 
-def process_notion(dry_run: bool = False) -> int:
+def process_notion(dry_run: bool = False, publish: bool = True) -> int:
     """Notionの「音声化待ち」を処理"""
     from notion_wordpress_uploader import NotionWordPressUploader
 
@@ -692,6 +692,11 @@ def process_notion(dry_run: bool = False) -> int:
         done += 1
 
     # ── 第2段階: 「公開待ち」→ フィード公開 ─────────────
+    # 🔴 publish=False で第2段階を飛ばす（2026-09-25）。読みの修正で回を作り直すとき、
+    #    溜まっていた「公開待ち」まで一緒に本番配信してしまう事故が2回あった。
+    if not publish:
+        print("\n--no-publish: 公開待ちの配信は行いません（作り直しのみ）")
+        return done
     pages2 = nw.query_database({"property": "Status(Podcast)", "status": {"equals": "公開待ち"}})
     print(f"\n公開待ち: {len(pages2)}件")
     for page in pages2:
