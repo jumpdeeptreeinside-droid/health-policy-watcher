@@ -529,12 +529,18 @@ class NotionWordPressUploader:
 
     def update_podcast_description(self, page_id: str, web_url: str) -> bool:
         """Notion ページの PodcastDescription プロパティを更新する"""
+        # 🔴 2026-09-24 /go/ を通す。Apple/Spotifyはリファラを送らないので、
+        #    パスを分けないと「概要欄から来た人」を数えられない。
+        #    301のままゾーン解析に出る（踏み台ページは作らない）。転送先は
+        #    crosshealthjp/public/_redirects。数え方は ~/sakuma/daily_report.py。
         text = (
             f"解説記事（全文はこちら）\n▶️{web_url}\n"
             "「医療政策ウォッチャー」公式サイト\n"
-            "▶️https://www.crosshealthjp.org/watcher\n"
+            "▶️https://www.crosshealthjp.org/go/watcher/site\n"
             "メンバーシップ（ウィークリーレポート全文）\n"
-            "▶️https://www.crosshealthjp.org/membership"
+            "▶️https://www.crosshealthjp.org/go/watcher/membership\n"
+            "隔週の便り（無料・街の数字をひとつ）\n"
+            "▶️https://www.crosshealthjp.org/go/watcher/letter"
         )
         api_url = f"{self.notion_base}/pages/{page_id}"
         payload = {

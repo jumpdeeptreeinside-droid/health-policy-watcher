@@ -300,8 +300,16 @@ def build_episode(title: str, body_text: str, out_mp3: str) -> bool:
     with open(lst, "w") as f:
         for w in wavs:
             f.write(f"file '{w}'\n")
+    # 🔴 2026-09-18 ID3タグを入れる。これが無いとプレイヤーがファイル名
+    #    （20260918_d2a651fb）を表示する＝聴く人には何の回か分からない（翔太さん指摘）。
     r = subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst,
-                        "-codec:a", "libmp3lame", "-b:a", "128k", out_mp3],
+                        "-codec:a", "libmp3lame", "-b:a", "128k",
+                        "-metadata", f"title={title}",
+                        "-metadata", "artist=CrossHealth",
+                        "-metadata", "album=医療政策ウォッチャー",
+                        "-metadata", "genre=Podcast",
+                        "-id3v2_version", "3",
+                        out_mp3],
                        capture_output=True, text=True)
     for w in wavs + [lst]:
         if not w.endswith("assets/sponsor.wav"):
