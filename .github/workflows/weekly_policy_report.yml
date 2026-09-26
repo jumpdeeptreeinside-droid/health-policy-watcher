@@ -53,7 +53,23 @@ jobs:
         run: |
           python src/weekly_policy_report.py
 
-      # ── 5. 失敗時の通知メール ──────────────────────────────
+      # ── 5. 生成物をリポジトリに残す ─────────────────────────
+      # 🔴 これまでメール添付だけだった。ランナーは毎回消えるので、
+      #    あとから本文を取りに行く手段がメールしか無かった（2026-09-26 サク追加）。
+      - name: ウィークリーレポートをコミット
+        run: |
+          if [ -n "$(git status --porcelain output/weekly_reports)" ]; then
+            git config user.name  "CrossHealth Watcher Bot"
+            git config user.email "jump.deep.tree.inside@gmail.com"
+            git add output/weekly_reports
+            git commit -m "weekly: ウィークリーレポートを自動保存"
+            git push
+            echo "pushed: output/weekly_reports"
+          else
+            echo "新しいレポートなし（pushスキップ）"
+          fi
+
+      # ── 6. 失敗時の通知メール ──────────────────────────────
       - name: 失敗通知メールを送信
         if: failure()
         uses: dawidd6/action-send-mail@v3
