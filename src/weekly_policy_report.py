@@ -239,12 +239,18 @@ class NotionAPI:
         r.raise_for_status()
         return r.json()
 
-    def query_completed_articles(self, days: int = 7) -> list[dict]:
+    def query_completed_articles(self, days: int = 7, since: Optional[str] = None) -> list[dict]:
         """
-        Status(コンテンツ作成)="完了" かつ直近 days 日以内の記事を返す。
+        Status(コンテンツ作成)="完了" かつ since 以降（既定は直近 days 日）の記事を返す。
         Date(Search) の降順でソートし、最新記事が先頭になる。
+
+        🔴 since は「レポートが名乗る期間の初日」を渡すこと（2026-09-26）。
+           以前は now-7日を %Y-%m-%d に丸めていたため、実行時刻（土 00:00 JST）より
+           前の時間帯のぶんだけ窓が前へはみ出し、前号に載せた記事をもう一度拾っていた
+           （w20260927 で8本。すべて前号の窓の最終日=9/18付だった）。
         """
-        since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+        if since is None:
+            since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
         payload: dict = {
             "filter": {
                 "and": [
@@ -604,6 +610,43 @@ def build_summary_page_blocks(
 _CIRCLE_NUMS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
 
 
+def filter_new_articles(notion, pages: list) -> tuple[list, list, list]:
+    """今週号に載せる記事だけを残す。(残り, 既報で落とした題, 重複で落とした題) を返す。
+
+    🔴 二重掲載よけ（2026-09-26）。w20260927 の原稿39本のうち10本が重複だった:
+       ・8本＝前号にも載っていた（実行時刻の関係で窓が前へはみ出していた）
+       ・2本＝別々のNotionページなのに公開先の記事が同じ（URL(Web)が一致）
+       落とした件数は呼び出し側で必ずログに出す。黙って減らすと「今週は少なかった」
+       に見えてしまう（[[feedback_checks_can_silently_no_op]] と同型）。
+
+    やり直したいときは WEEKLY_INCLUDE_REPORTED=1 で既報も含める。
+    """
+    if os.environ.get("WEEKLY_INCLUDE_REPORTED") == "1":
+        logger.info("  WEEKLY_INCLUDE_REPORTED=1: 既報の記事も含めます")
+        fresh, already = list(pages), []
+    else:
+        fresh, already = [], []
+        for pg in pages:
+            if (notion.get_property(pg, "Article(WeeklySummary)") or "").strip():
+                already.append(notion.get_property(pg, "Title") or "タイトルなし")
+            else:
+                fresh.append(pg)
+
+    # 同じ記事が2ページに分かれていることがある。判定は公開先の URL(Web) で行う
+    # （実測: URL(Source)もTitleも違うのに、公開記事は同じ 2026092401 だった）。
+    seen, uniq, dups = set(), [], []
+    for pg in fresh:
+        u = (notion.get_property(pg, "URL(Web)") or "").strip() or \
+            (notion.get_property(pg, "URL(Source)") or "").strip()
+        if u and u in seen:
+            dups.append(notion.get_property(pg, "Title") or "タイトルなし")
+            continue
+        if u:
+            seen.add(u)
+        uniq.append(pg)
+    return uniq, already, dups
+
+
 def get_week_range(today: datetime) -> tuple[datetime, datetime, datetime]:
     """
     土曜日実行を想定した期間計算。
@@ -767,8 +810,25 @@ def main() -> None:
     # ── 1. Notion から記事取得 ─────────────────────────────
     lookup_days = int(os.environ.get("WEEKLY_REPORT_DAYS", "7"))
     logger.info(f"\n[1] Notion から完了記事を取得中（直近{lookup_days}日間）...")
-    pages = notion.query_completed_articles(days=lookup_days)
-    logger.info(f"  {len(pages)} 件取得")
+    period_start, _, _ = get_week_range(today)
+    pages = notion.query_completed_articles(days=lookup_days,
+                                            since=period_start.strftime("%Y-%m-%d"))
+    logger.info(f"  {len(pages)} 件取得（期間初日 {period_start:%Y-%m-%d} 以降）")
+
+    # 🔴 二重掲載よけ（2026-09-26）。窓を揃えても、記事の追記や再公開で前号の記事が
+    #    もう一度入ることがある。前号までに要約を作った印（Article(WeeklySummary)）が
+    #    付いているページは落とす。落とした件数は必ず出す
+    #    ＝黙って減らすと「今週は少なかった」に見えてしまう。
+    pages, already, dup_titles = filter_new_articles(notion, pages)
+    if already:
+        logger.info(f"  既報のため除外: {len(already)}件")
+        for t in already[:10]:
+            logger.info(f"    - {t[:60]}")
+    if dup_titles:
+        logger.info(f"  同一記事の重複を除外: {len(dup_titles)}件")
+        for t in dup_titles[:10]:
+            logger.info(f"    - {t[:60]}")
+    logger.info(f"  今回の対象: {len(pages)} 件")
 
     if not pages:
         logger.info("  対象記事がありません。終了します。")
