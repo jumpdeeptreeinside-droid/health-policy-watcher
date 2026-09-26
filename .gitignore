@@ -31,6 +31,9 @@ env/
 # Output / Download folders
 # ===========================
 output/*
+# ウィークリーレポートだけは残す（ランナーは消えるので、あとから取りに行けなくなる）
+!output/weekly_reports/
+!output/weekly_reports/**
 !output/slides/
 downloads/
 
