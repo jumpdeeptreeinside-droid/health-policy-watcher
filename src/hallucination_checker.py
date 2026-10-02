@@ -327,10 +327,62 @@ _SCRAPE_HEADERS = {
 }
 
 
+# 🔴 厚労省のページは**本文がPDFの中**にある。HTMLからは見出しとPDFリンクしか取れない。
+#    2026-10-02 実測（医療施設動態調査 令和8年7月末概数）
+#      照合に使われていたHTML   596字
+#      本文のあるPDF            5,958字 / 2ページ
+#    → 2,117字の生成記事を596字と比べて FAIL 10/100。
+#      5日間 PASS が1件も出ず、判定は**元記事の文字数だけ**で決まっていた
+#      （WARN群の元記事 中央値2,564字 / FAIL群 518字）。
+#    参照テキストが薄いままの判定は「記事が誤っている」証拠にならないので、PDF本文を読む。
+_PDF_MIN_CHARS = 200          # これ未満しか取れないPDFは中身なしとみなす（画像PDF等）
+# 🔴 照合が成立する下限。実測ではWARN群(80点)の元記事が中央値2,564字、
+#    FAIL群が518字だった。1,200字と「生成の1/3未満」を境目にする。
+_MIN_REFERENCE_CHARS = 1200
+_MIN_REFERENCE_RATIO = 3.0    # 元×3 < 生成 なら、比べるには足りない
+_THIN_HTML_CHARS = 1500       # HTMLがこれ未満なら、PDFを探して補う
+
+
+def extract_pdf_text(url: str) -> str:
+    """PDF の本文テキスト。読めなければ空文字列。"""
+    try:
+        r = requests.get(url, headers=_SCRAPE_HEADERS, timeout=40)
+        r.raise_for_status()
+        if not r.content[:5].startswith(b"%PDF"):
+            return ""
+        import fitz                                    # PyMuPDF
+        with fitz.open(stream=r.content, filetype="pdf") as doc:
+            # 長大な白書を丸ごと入れるとプロンプトが溢れるので先頭20ページまで
+            t = "\n".join(doc[i].get_text() for i in range(min(doc.page_count, 20)))
+        t = re.sub(r"[ \t\u3000]+", " ", t)
+        t = re.sub(r"\n{3,}", "\n\n", t).strip()
+        return t if len(t) >= _PDF_MIN_CHARS else ""
+    except Exception as e:
+        logger.debug(f"  PDF読取失敗 ({url}): {e}")
+        return ""
+
+
+def _pdf_links(soup, base: str) -> list[str]:
+    """ページ内のPDFリンク（本文が入っている見込みのもの）。"""
+    from urllib.parse import urljoin
+    out = []
+    for a in soup.find_all("a", href=True):
+        h = a["href"]
+        if h.lower().split("?")[0].endswith(".pdf"):
+            u = urljoin(base, h)
+            if u not in out:
+                out.append(u)
+    return out
+
+
 def scrape_original_content(url: str) -> str:
     """元記事 URL から本文テキストを取得する。失敗時は空文字列を返す。"""
-    if url.lower().endswith(".pdf"):
-        # PDF は直接スクレイピング不可 → HTMLランディングページを試みる
+    if url.lower().split("?")[0].endswith(".pdf"):
+        # 🔴 以前はランディングページの og:description（1行）だけを見ていた。
+        #    PDF本文そのものを読む。読めなければ従来どおりランディングへ退避。
+        t = extract_pdf_text(url)
+        if t:
+            return t[:12000]
         try:
             landing_url = url.rsplit("/", 1)[0] + "/"
             resp = requests.get(landing_url, headers=_SCRAPE_HEADERS, timeout=15)
@@ -370,6 +422,17 @@ def scrape_original_content(url: str) -> str:
                     parts.append(t)
         content = "\n".join(parts)
 
+        # 🔴 本文がPDFにある型（厚労省の統計・白書・審議会資料）を拾う。
+        #    HTMLが薄いときだけ探す。十分あるページで余計なPDFを混ぜない。
+        if len(content) < _THIN_HTML_CHARS:
+            for pu in _pdf_links(soup, url)[:3]:
+                pt = extract_pdf_text(pu)
+                if pt:
+                    content = (content + "\n\n" + pt).strip()
+                    logger.info(f"  元記事にPDF本文を追加: {pu} （{len(pt):,}字）")
+                    if len(content) >= _THIN_HTML_CHARS:
+                        break
+
         if len(content) < 100:
             og = (
                 soup.find("meta", property="og:description")
@@ -389,7 +452,7 @@ def scrape_original_content(url: str) -> str:
             except Exception:
                 pass
 
-        return content[:8000]
+        return content[:12000]
     except Exception as e:
         logger.debug(f"  元記事スクレイピング失敗 ({url}): {e}")
         return ""
@@ -425,6 +488,29 @@ def run_hallucination_check(
             "score":   0,
             "issues":  [],
             "summary": "元記事を取得できなかったため自動チェックを実行できませんでした。手動確認をお願いします。",
+        }
+
+    # 🔴 2026-10-02 追加。**「照合できなかった」を FAIL と呼ばない。**
+    #    FAIL は「修正が必要」という意味なので、比べられなかったのに FAIL にすると
+    #    その判定自体が嘘になる。実際に起きていたこと：
+    #      参照 596字 vs 生成 2,117字 → FAIL 10/100。記事の誤りの証拠ではなく
+    #      参照テキストが薄いだけだった。FAILが毎日十数件たまり、人の確認を要求し続けた。
+    #    参照が生成よりずっと短いときは、判定させずに WARN（照合不能）で止める。
+    #    ⚠️ 甘くしているのではない。自動PASSはさせず、人に回すのは同じ。
+    #       変わるのは「誤りがある」と断定しないことだけ。
+    if len(original) < _MIN_REFERENCE_CHARS or len(original) * _MIN_REFERENCE_RATIO < len(generated):
+        logger.warning(
+            f"  参照テキストが薄いため照合不能（元 {len(original):,}字 / 生成 {len(generated):,}字）"
+        )
+        return {
+            "verdict": "WARN",
+            "score":   0,
+            "issues":  [],
+            "summary": (
+                f"元記事を十分に取得できなかったため照合できませんでした"
+                f"（元 {len(original):,}字 / 生成 {len(generated):,}字）。"
+                "本文がPDFや画像の中にある可能性があります。手動確認をお願いします。"
+            ),
         }
 
     prompt = PROMPT_HALLUCINATION_CHECK.format(
