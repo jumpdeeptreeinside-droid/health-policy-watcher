@@ -67,6 +67,24 @@ def main() -> int:
         sys.exit("NG: 原稿に本人の名乗りがある。自動音声の回に入れない")
     if any(len(p) > MAX_BLOCK for p in paras):
         sys.exit("NG: 2,000字を超える段落がある（Notionのブロック上限）")
+
+    # 🔴 読みが崩れた実例（2026-10-03・大阪の回）を次から出さないための注意書き。
+    #    止めずに警告だけ出す（正しく読める場合もあるので、判断は人に残す）。
+    #    「◯分」: VOICEPEAKのユーザー辞書に 10→ジュウ と 十分→ジュウブン があり、
+    #             「徒歩10分」が「とほじゅうぶん」と読まれた。かなで「じゅっぷん」と書けば直る。
+    #    単独の「数」: 「かず」でなく「すう」と読まれた。「数字」「数え方」は正しく読める。
+    body = "".join(paras)
+    warn = []
+    for m in re.finditer(r"[0-9０-９]+分", body):
+        warn.append(f"「{m.group(0)}」→ かなで書かないと『ぶん』と読まれることがある（例 じゅっぷん）")
+    for m in re.finditer(r"(?<![字え学量値件回人日者点個軒])数(?![字え学量値件回人日者点個軒])", body):
+        i = m.start()
+        warn.append(f"単独の「数」…{body[max(0, i-10):i+10]}… → 『すう』と読まれる。かなで「かず」と書く")
+    if warn:
+        print("  ⚠️ 読みが崩れやすい箇所があります（止めません。音声で確かめてください）")
+        for w in dict.fromkeys(warn):
+            print(f"     ・{w}")
+
     print(f"  検査通過: 原稿{chars}字・{len(paras)}段落／説明欄のリンク1本 {links[0]}")
 
     if o.dry_run:
