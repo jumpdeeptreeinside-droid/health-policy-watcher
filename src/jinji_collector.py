@@ -30,7 +30,7 @@ ROSTERS = os.path.join(DATA, "mhlw_rosters")
 EVENTS = os.path.join(DATA, "events.jsonl")
 STATE = os.path.join(DATA, "state.json")
 OUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "output", "jinji")
-UA = {"User-Agent": "Mozilla/5.0 (CrossHealth research; contact: jump.deep.tree.inside@gmail.com)"}
+UA = {"User-Agent": "Mozilla/5.0 (CrossHealth research; contact: info@crosshealthjp.org)"}
 WAIT = 1.5
 
 KANBU_INDEX = "https://www.mhlw.go.jp/kouseiroudoushou/kanbumeibo/index.html"

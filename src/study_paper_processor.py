@@ -83,7 +83,7 @@ NOTION_API_KEY, STUDY_DATABASE_ID, GEMINI_API_KEY, GEMINI_MODEL = _load_config()
 HEADERS = {
     "User-Agent": (
         "StudyPaperProcessor/1.0 (health-policy-watcher; "
-        "mailto:jump.deep.tree.inside@gmail.com)"
+        "mailto:info@crosshealthjp.org)"
     )
 }
 

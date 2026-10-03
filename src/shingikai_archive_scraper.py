@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup
 
 BASE = "https://www.mhlw.go.jp"
 OUT_ROOT = os.path.expanduser("~/shingikai_archive")
-UA = {"User-Agent": "Mozilla/5.0 (CrossHealth research; contact: jump.deep.tree.inside@gmail.com)"}
+UA = {"User-Agent": "Mozilla/5.0 (CrossHealth research; contact: info@crosshealthjp.org)"}
 WAIT = 1.5
 
 # 各審議会のインデックスページ（現行＋過去アーカイブ）。2026-07-07に全URL実地検証済み。

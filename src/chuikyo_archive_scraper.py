@@ -37,7 +37,7 @@ BODIES = {
         ],
     },
 }
-UA = {"User-Agent": "Mozilla/5.0 (CrossHealth research; contact: jump.deep.tree.inside@gmail.com)"}
+UA = {"User-Agent": "Mozilla/5.0 (CrossHealth research; contact: info@crosshealthjp.org)"}
 WAIT = 1.5
 
 

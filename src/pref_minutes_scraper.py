@@ -23,7 +23,7 @@ import urllib.request
 from bs4 import BeautifulSoup
 
 OUT_ROOT = os.path.expanduser("~/pref_minutes_archive")
-UA = {"User-Agent": "Mozilla/5.0 (CrossHealth research; contact: jump.deep.tree.inside@gmail.com)"}
+UA = {"User-Agent": "Mozilla/5.0 (CrossHealth research; contact: info@crosshealthjp.org)"}
 WAIT = 1.5
 MAX_PAGES = 400          # 県ごとの最大ページ走査数（暴走防止）
 LINK_KW = ("調整会議", "協議会", "連携会議", "医療審議会", "構想", "懇話会", "開催",
