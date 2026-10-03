@@ -739,7 +739,7 @@ Status(コンテンツ作成) を「完了」に変更してください。
             server.starttls()
             server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
             server.sendmail(GMAIL_ADDRESS, NOTIFY_TO, msg.as_string())
-        logger.info(f"  ファクトチェック通知メール送信完了: {NOTIFY_TO}")
+        logger.info(f"  ファクトチェック通知メール送信完了: {len(NOTIFY_TO)}件")
     except Exception as e:
         logger.error(f"  メール送信失敗: {e}")
 
@@ -779,7 +779,7 @@ def send_stall_notification(pending: int, failures: list) -> None:
             server.starttls()
             server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
             server.sendmail(GMAIL_ADDRESS, NOTIFY_TO, msg.as_string())
-        logger.info(f"  空振り通知メール送信完了: {NOTIFY_TO}")
+        logger.info(f"  空振り通知メール送信完了: {len(NOTIFY_TO)}件")
     except Exception as e:
         logger.error(f"  空振り通知の送信失敗: {e}")
 

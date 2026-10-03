@@ -134,7 +134,7 @@ WordPressの管理画面で内容を確認してください。
             server.starttls()
             server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD_WP)
             server.sendmail(GMAIL_ADDRESS, NOTIFY_TO_WP, msg.as_string())
-        logger.info(f"WordPress完了通知メール送信: {NOTIFY_TO_WP}")
+        logger.info(f"WordPress完了通知メール送信: 1件")
     except Exception as e:
         logger.error(f"メール送信失敗: {e}")
 

@@ -206,7 +206,7 @@ def send_report(body: str) -> None:
             server.starttls()
             server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
             server.sendmail(GMAIL_ADDRESS, NOTIFY_TO, msg.as_string())
-        logger.info(f"レポートメール送信完了: {', '.join(NOTIFY_TO)}")
+        logger.info(f"レポートメール送信完了: {len(NOTIFY_TO)}件")
     except Exception as e:
         logger.error(f"メール送信失敗: {e}")
 

@@ -678,7 +678,7 @@ def send_result_email(
             srv.starttls()
             srv.login(gmail_address, gmail_pass)
             srv.sendmail(gmail_address, NOTIFY_TO, msg.as_string())
-        logger.info(f"  結果メール送信: {NOTIFY_TO}")
+        logger.info(f"  結果メール送信: {len(NOTIFY_TO)}件")
     except Exception as e:
         logger.error(f"  メール送信失敗: {e}")
 
