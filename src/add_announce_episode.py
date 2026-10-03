@@ -118,10 +118,14 @@ def _parent_page():
     if not r["results"]:
         sys.exit("NG: 既存の台本ページが見つからないので、置き場所を決められない")
     u = r["results"][0]["properties"]["Script(Podcast)"]["url"]
-    pid = re.search(r"([0-9a-f]{32})", u.replace("-", ""))
-    if not pid:
+    # 🔴 末尾の32桁がページID。先頭から32桁切ると桁がずれる（2026-10-03 実際に404）。
+    #    app.notion.com は "/p/<スラッグ>-<ID>" の形で、スラッグに数字が入ると
+    #    ハイフンを外した文字列の先頭がスラッグの数字から始まる。
+    #    例 "/p/1-67-3ee8…87d" → "1673ee8…87d"(35桁) の先頭32桁は別物。
+    runs = re.findall(r"[0-9a-f]{32,}", u.replace("-", ""))
+    if not runs:
         sys.exit(f"NG: 台本URLからページIDを取れない: {u}")
-    p = api("GET", f"/pages/{pid.group(1)}")
+    p = api("GET", f"/pages/{runs[-1][-32:]}")
     par = p.get("parent", {})
     if par.get("type") != "page_id":
         sys.exit(f"NG: 既存台本の親が page_id でない（{par.get('type')}）。置き場所を手で決めること")
