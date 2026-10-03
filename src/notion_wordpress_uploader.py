@@ -89,7 +89,9 @@ except ImportError:
     logger.error("config.py が見つからず、環境変数も設定されていません。処理を中断します。")
     sys.exit(1)
 
-NOTIFY_TO_WP = "jump.deep.tree.inside@gmail.com"
+# 🔴 PUBLIC repo なので宛先はコードに書かない（2026-10-03 翔太さん判断）。
+#    Actions の Secret NOTIFY_EMAIL から渡す。未設定なら送らずに理由を出す。
+NOTIFY_TO_WP = os.environ.get("NOTIFY_EMAIL", "")
 
 # アイキャッチ画像（WordPress メディアライブラリ内の URL）
 FEATURED_IMAGE_URL = "https://tekutekuradio.com/wp-content/uploads/2025/10/名称_未_設定-12.png"

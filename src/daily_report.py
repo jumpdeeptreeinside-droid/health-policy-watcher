@@ -60,9 +60,13 @@ except ImportError:
     logger.error("config.py が見つからず、環境変数も未設定です。処理を中断します。")
     sys.exit(1)
 
-NOTIFY_TO: List[str] = [
-    "jump.deep.tree.inside@gmail.com",
-]
+# 🔴 PUBLIC repo なので、宛先はコードに書かない（2026-10-03 翔太さん判断）。
+#    GitHub Actions の Secret NOTIFY_EMAIL から渡す。手元で動かすときは
+#    環境変数 NOTIFY_EMAIL を設定する。未設定なら送信せず、理由を出して止める。
+NOTIFY_TO: List[str] = [x for x in os.environ.get("NOTIFY_EMAIL", "").split(",") if x.strip()]
+if not NOTIFY_TO:
+    logger.error("NOTIFY_EMAIL が未設定です。宛先が無いので送信しません。")
+    sys.exit(1)
 
 _NOTION_HEADERS = {
     "Authorization": f"Bearer {NOTION_API_KEY}",

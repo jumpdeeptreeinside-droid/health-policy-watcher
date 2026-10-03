@@ -46,7 +46,7 @@ jobs:
           cd site
           if [ -n "$(git status --porcelain src/articles-data)" ]; then
             git config user.name "CrossHealth Watcher Bot"
-            git config user.email "jump.deep.tree.inside@gmail.com"
+            git config user.email "info@crosshealthjp.org"
             git add src/articles-data
             git commit -m "watcher: 記事の自動公開"
             git push

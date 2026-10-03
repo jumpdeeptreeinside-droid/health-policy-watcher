@@ -29,6 +29,20 @@ import sys
 import time
 from datetime import datetime
 
+
+def _cfg(name: str, default: str = "") -> str:
+    """環境変数 → src/config.py（git追跡外）→ default の順に読む。
+    🔴 2026-10-03 個人の宛先とDriveのマウント名をPUBLIC repoから外したため。
+       Actionsでは Secret が環境変数で渡る。手元では config.py が使われる。"""
+    v = os.environ.get(name)
+    if v:
+        return v
+    try:
+        import config as _c
+        return getattr(_c, name, default) or default
+    except Exception:
+        return default
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # WordPress設定必須のモジュールを再利用するためのダミー（WP APIは呼ばない）
@@ -49,8 +63,11 @@ SPEED_BODY = "120"     # 本文（現行.vppの実測値）
 CHUNK_LIMIT = 120      # CLIの1回あたり文字数上限（140の安全側）
 SYNTH_TIMEOUT = 180    # 1チャンクの合成タイムアウト（秒）
 
+# 🔴 ここは通知先ではなく **Google Drive のマウント名**（＝Googleアカウント名）。
+#    info@ に変えると実在しないパスになる。PUBLIC repo に書かないため環境変数にした。
+#    値は src/config.py（git追跡外）か環境変数 DRIVE_MOUNT で渡す。
 DRIVE_AUDITION = os.path.expanduser(
-    "~/Library/CloudStorage/GoogleDrive-tekutekuradio@gmail.com/マイドライブ/CrossHealth/Podcast試聴")
+    "~/Library/CloudStorage/" + _cfg("DRIVE_MOUNT") + "/マイドライブ/CrossHealth/Podcast試聴")
 
 # 読みの修正ルール（正規表現, 置換）。
 # 旧: (r"([0-9０-９]+)人", r"\1にん") … 2026-07-07に「〇〇人→ひと」誤読の対策として入れたが、
@@ -551,7 +568,7 @@ def send_mail(subject: str, body: str) -> None:
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = addr
-    msg["To"] = "jump.deep.tree.inside@gmail.com"
+    msg["To"] = _cfg("NOTIFY_EMAIL")
     try:
         with smtplib.SMTP("smtp.gmail.com", 587) as srv:
             srv.starttls()

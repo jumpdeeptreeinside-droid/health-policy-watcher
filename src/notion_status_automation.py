@@ -61,7 +61,12 @@ except ImportError:
 
 GMAIL_ADDRESS     = os.environ.get('GMAIL_ADDRESS', '')
 GMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD', '')
-NOTIFY_TO = ["jump.deep.tree.inside@gmail.com", "kremlin006@gmail.com"]
+# 🔴 PUBLIC repo なので宛先はコードに書かない（2026-10-03 翔太さん判断）。
+#    ここは宛先が2件（系統が違う）ので Secret NOTIFY_EMAIL_STATUS をカンマ区切りで使う。
+#    未設定なら送らずに理由を出す。
+NOTIFY_TO = [x.strip() for x in os.environ.get("NOTIFY_EMAIL_STATUS", "").split(",") if x.strip()]
+if not NOTIFY_TO:
+    raise SystemExit("NOTIFY_EMAIL_STATUS が未設定です。宛先が無いので送信しません。")
 
 
 def send_podcast_notification(articles: list) -> None:

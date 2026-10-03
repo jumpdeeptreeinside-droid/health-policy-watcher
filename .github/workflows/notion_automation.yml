@@ -36,6 +36,7 @@ jobs:
       
       - name: Notionステータスを自動更新
         env:
+          NOTIFY_EMAIL_STATUS: ${{ secrets.NOTIFY_EMAIL_STATUS }}
           NOTION_API_KEY:     ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           GMAIL_ADDRESS:      ${{ secrets.GMAIL_ADDRESS }}
@@ -61,7 +62,7 @@ jobs:
           username: ${{ secrets.GMAIL_ADDRESS }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
           subject: "【エラー】Notionステータス自動更新 失敗 - 要確認"
-          to: jump.deep.tree.inside@gmail.com
+          to: ${{ secrets.NOTIFY_EMAIL }}
           from: ${{ secrets.GMAIL_ADDRESS }}
           body: |
             Notionステータス自動更新に失敗しました。

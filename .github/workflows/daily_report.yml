@@ -41,6 +41,7 @@ jobs:
       # ── 4. 日次進捗レポートを送信 ───────────────────────────
       - name: 日次進捗レポートを送信
         env:
+          NOTIFY_EMAIL:       ${{ secrets.NOTIFY_EMAIL }}
           NOTION_API_KEY:     ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           GMAIL_ADDRESS:      ${{ secrets.GMAIL_ADDRESS }}
@@ -58,7 +59,7 @@ jobs:
           username: ${{ secrets.GMAIL_ADDRESS }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
           subject: "【エラー】日次進捗レポート 失敗 - 要確認"
-          to: jump.deep.tree.inside@gmail.com
+          to: ${{ secrets.NOTIFY_EMAIL }}
           from: ${{ secrets.GMAIL_ADDRESS }}
           body: |
             日次進捗レポートの送信に失敗しました。

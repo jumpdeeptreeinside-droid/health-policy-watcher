@@ -18,13 +18,30 @@ Status(Podcast)を「音声化待ち」に戻して mac_audio_pipeline を回す
   python3 src/rework_flagged_episodes.py --archive          # 再生成後、旧mp3を _修正済_旧 へ退避
 """
 import argparse, fcntl, glob, os, re, sys, unicodedata, shutil
+
+
+def _cfg(name: str, default: str = "") -> str:
+    """環境変数 → src/config.py（git追跡外）→ default の順に読む。
+    🔴 2026-10-03 個人の宛先とDriveのマウント名をPUBLIC repoから外したため。
+       Actionsでは Secret が環境変数で渡る。手元では config.py が使われる。"""
+    v = os.environ.get(name)
+    if v:
+        return v
+    try:
+        import config as _c
+        return getattr(_c, name, default) or default
+    except Exception:
+        return default
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault('WORDPRESS_URL', 'https://unused.invalid')
 os.environ.setdefault('WORDPRESS_USERNAME', 'u')
 os.environ.setdefault('WORDPRESS_APP_PASSWORD', 'p')
 
+# 🔴 ここは通知先ではなく **Google Drive のマウント名**（＝Googleアカウント名）。
+#    info@ に変えると実在しないパスになる。PUBLIC repo に書かないため環境変数にした。
+#    値は src/config.py（git追跡外）か環境変数 DRIVE_MOUNT で渡す。
 DEFAULT_FOLDER = os.path.expanduser(
-    "~/Library/CloudStorage/GoogleDrive-tekutekuradio@gmail.com/マイドライブ/CrossHealth/Podcast試聴/1回目視聴済_修正点あり")
+    "~/Library/CloudStorage/" + _cfg("DRIVE_MOUNT") + "/マイドライブ/CrossHealth/Podcast試聴/1回目視聴済_修正点あり")
 TITLE_PROPS = ["Article＆Script Title", "Title", "Article(Web)"]
 
 

@@ -38,6 +38,7 @@ jobs:
       # ── 4. ハルシネーションチェック実行 ────────────────────
       - name: ハルシネーションチェックを実行
         env:
+          NOTIFY_EMAIL:       ${{ secrets.NOTIFY_EMAIL }}
           NOTION_API_KEY:     ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
@@ -58,7 +59,7 @@ jobs:
           username: ${{ secrets.GMAIL_ADDRESS }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
           subject: "【ハルシネーションチェック】GitHub Actions 実行失敗 - 要確認"
-          to: jump.deep.tree.inside@gmail.com
+          to: ${{ secrets.NOTIFY_EMAIL }}
           from: ${{ secrets.GMAIL_ADDRESS }}
           body: |
             ハルシネーションチェッカーの自動実行に失敗しました。

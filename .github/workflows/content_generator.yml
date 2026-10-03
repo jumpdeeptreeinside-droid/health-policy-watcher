@@ -44,6 +44,7 @@ jobs:
       # ── 4. コンテンツ生成スクリプトを実行 ──────────────────
       - name: コンテンツ自動生成を実行
         env:
+          NOTIFY_EMAIL:       ${{ secrets.NOTIFY_EMAIL }}
           NOTION_API_KEY:     ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
@@ -74,7 +75,7 @@ jobs:
           username: ${{ secrets.GMAIL_ADDRESS }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
           subject: "【エラー】コンテンツ自動生成 失敗 - 要確認"
-          to: jump.deep.tree.inside@gmail.com
+          to: ${{ secrets.NOTIFY_EMAIL }}
           from: ${{ secrets.GMAIL_ADDRESS }}
           body: |
             コンテンツ自動生成に失敗しました。

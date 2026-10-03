@@ -46,7 +46,11 @@ HEADERS  = {
         "Chrome/120.0.0.0 Safari/537.36"
     )
 }
-NOTIFY_TO = "jump.deep.tree.inside@gmail.com"
+# 🔴 PUBLIC repo なので宛先はコードに書かない（2026-10-03 翔太さん判断）。
+#    Actions の Secret / 環境変数 NOTIFY_EMAIL から渡す。未設定なら送らずに理由を出す。
+NOTIFY_TO = os.environ.get("NOTIFY_EMAIL", "")
+if not NOTIFY_TO:
+    raise SystemExit("NOTIFY_EMAIL が未設定です。宛先が無いので送信しません。")
 
 # ──────────────────────────────────────────────
 # ログ設定

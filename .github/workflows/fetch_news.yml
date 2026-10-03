@@ -67,7 +67,7 @@ jobs:
           username: ${{ secrets.GMAIL_ADDRESS }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
           subject: "【エラー】ニュース自動収集 失敗 - 要確認"
-          to: jump.deep.tree.inside@gmail.com
+          to: ${{ secrets.NOTIFY_EMAIL }}
           from: ${{ secrets.GMAIL_ADDRESS }}
           body: |
             ニュース自動収集に失敗しました。
