@@ -61,6 +61,17 @@ def main() -> int:
     links = re.findall(r"https?://\S+", desc)
     if len(links) != 1:
         sys.exit(f"NG: 説明欄のリンクが{len(links)}本（告知回は1本だけ）: {links}")
+    body = "".join(paras)
+
+    # 🔴 使ってはいけない言い方。原典で確かめられない強さの表現は止める。
+    #    「徒歩10分」の根拠は、国の都市評価が徒歩圏を半径800mとしていることと、
+    #    不動産広告の換算（道路距離80mで1分）を当てた目安であって、
+    #    国が基準として定めたものではない（2026-10-03 原典確認）。
+    NG_WORDS = ["広く使われている", "基準として定められ", "国が定めた基準",
+                "一般的な基準", "法律で決まって"]
+    bad = [w for w in NG_WORDS if w in body]
+    if bad:
+        sys.exit(f"NG: 原典で確かめられない言い方があります: {bad}")
     if not 900 <= chars <= 1700:
         sys.exit(f"NG: 原稿{chars}字。3〜5分（約990〜1,650字）から外れている")
     if any(x in "".join(paras) for x in ("木内翔太", "木内")):
@@ -74,6 +85,8 @@ def main() -> int:
     #             「徒歩10分」が「とほじゅうぶん」と読まれた。かなで「じゅっぷん」と書けば直る。
     #    単独の「数」: 「かず」でなく「すう」と読まれた。「数字」「数え方」は正しく読める。
     body = "".join(paras)
+
+
     warn = []
     for m in re.finditer(r"[0-9０-９]+分", body):
         warn.append(f"「{m.group(0)}」→ かなで書かないと『ぶん』と読まれることがある（例 じゅっぷん）")
