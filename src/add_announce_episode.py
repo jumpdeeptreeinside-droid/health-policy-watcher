@@ -7,12 +7,12 @@
   ただし告知回はニュース収集から生まれないので、Notionに入れる手段が無かった。
 
 🔴 通常回と違う点（ここを間違えると他のジョブが拾ってしまう）
-  Status(Web)        = "-"   … 解説記事は作らないので、WordPress/サイトに投稿させない
+  Status(Web)        = "完了" … 解説記事は作らせない。🔴 "-" は自動化が「投稿待ち」に戻すので禁止
   Status(コンテンツ作成) = "完了" … ファクトチェック待ちに入れない（元記事URLが無いので検証不能）
   Category           = 国内系 … 国際系にすると「夕方のまとめ対象」でスキップされる
   PodcastDescription = 手で入れる
      🔴 通常回は update_podcast_description() がリンク4本の定型を書くが、
-        それは解説記事を投稿したときだけ走る（Status(Web)="-" なら走らない）。
+        それは解説記事を投稿したときだけ走る（Status(Web)が「投稿待ち」でなければ走らない）。
         告知回の決まりは「リンク1本だけ」なので、定型を使わず手で入れる。
 
 使い方:
@@ -23,6 +23,7 @@ import argparse, json, os, re, sys, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
+import datetime as _dt
 
 BASE = "https://api.notion.com/v1"
 H = {"Authorization": f"Bearer {config.NOTION_API_KEY}",
@@ -72,8 +73,14 @@ def main() -> int:
     bad = [w for w in NG_WORDS if w in body]
     if bad:
         sys.exit(f"NG: 原典で確かめられない言い方があります: {bad}")
-    if not 900 <= chars <= 1700:
-        sys.exit(f"NG: 原稿{chars}字。3〜5分（約990〜1,650字）から外れている")
+    # 🔴 3〜5分が決まり（告知回の決まり③）。ただし「なぜ」を入れる回は6分まで許す
+    #    （2026-10-03 翔太さんの指示で大阪の回を5.4分にした）。
+    #    1分あたり約330字で換算。6分=約1,980字。
+    if not 900 <= chars <= 1980:
+        sys.exit(f"NG: 原稿{chars}字。3〜6分（約990〜1,980字）から外れている")
+    if chars > 1700:
+        print(f"  ⚠️ 原稿{chars}字＝約{(chars+103)/330:.1f}分。決まりの3〜5分を超えています"
+              f"（6分までは翔太さんの指示があるときのみ）")
     if any(x in "".join(paras) for x in ("木内翔太", "木内")):
         sys.exit("NG: 原稿に本人の名乗りがある。自動音声の回に入れない")
     if any(len(p) > MAX_BLOCK for p in paras):
@@ -105,7 +112,7 @@ def main() -> int:
         print(f"   Title                 {o.title}")
         print(f"   Category              {o.category}")
         print(f"   Status(Podcast)       音声化待ち")
-        print(f"   Status(Web)           -       （解説記事は作らない）")
+        print("   Status(Web)           完了     （解説記事は作らせない。ハイフンは自動化が戻す）")
         print(f"   Status(コンテンツ作成)   完了     （ファクトチェックに入れない）")
         print(f"   PodcastDescription    {desc[:60]}…")
         print(f"   台本ページ              {len(paras)}段落")
@@ -131,10 +138,27 @@ def main() -> int:
             "PodcastDescription": {"rich_text": [{"text": {"content": desc[:MAX_BLOCK]}}]},
             "Category": {"select": {"name": o.category}},
             "Status(Podcast)": {"status": {"name": "音声化待ち"}},
-            "Status(Web)": {"status": {"name": "-"}},
+            # 🔴 "-" にしてはいけない（2026-10-03 実害が出る寸前だった）。
+            #    notion_status_automation.py が毎時、
+            #    「Status(コンテンツ作成)=完了 かつ Status(Web)="-"」の行を
+            #    Status(Web)→「投稿待ち」に書き換える。告知回は常に
+            #    Status(コンテンツ作成)=完了 なので、必ず対象になる。
+            #    「投稿待ち」になると解説記事が作られ、さらに
+            #    update_podcast_description() が説明欄をリンク4本の定型に上書きする
+            #    ＝告知回の「リンク1本だけ」が壊れる。
+            #    記事を作るジョブは「投稿待ち」しか見ないので「完了」なら拾われない。
+            "Status(Web)": {"status": {"name": "完了"}},
             "Status(コンテンツ作成)": {"status": {"name": "完了"}},
         }})
     print(f"  ② DBの行 {row['url']}")
+    # 🔴 2026-10-04: 15:15:00 に入れたら、同じ分に走った音声パイプラインが
+    #    Notionを読む瞬間に行が見えず、1時間待つことになった（失敗ではない）。
+    #    「分」単位で動くジョブと同じ分に物を入れない。
+    _m = _dt.datetime.now().minute          # このMacの時計はJST
+    if 14 <= _m <= 16:
+        print(f"  ⚠️ いま:{_m:02d}分です。音声パイプラインは毎時:15に走るので、"
+              "この行が見えず**次の回（1時間後）まで待つ**ことがあります。")
+        print("     急ぐときは :17 以降に入れ直すか、1時間待ってください。")
     print("\n  次に起きること: 毎時:15の音声パイプラインが音声化し、**試聴待ち**で止まります。")
     print("  配信は、人が「公開待ち」に変えてから。")
     return 0
