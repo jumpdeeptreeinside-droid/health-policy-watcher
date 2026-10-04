@@ -10,6 +10,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 import urllib.request
 
 from bs4 import BeautifulSoup
@@ -39,6 +40,7 @@ BODIES = {
 }
 UA = {"User-Agent": "Mozilla/5.0 (CrossHealth research; contact: info@crosshealthjp.org)"}
 WAIT = 1.5
+MIN_KAI = int(os.environ.get("CHUIKYO_MIN_KAI", "0"))   # これより前の回は取らない（例 108＝DBの収録範囲）
 
 
 def get(url: str) -> str:
@@ -63,7 +65,9 @@ def collect_minute_links() -> list:
             continue
         soup = BeautifulSoup(html, "html.parser")
         for a in soup.find_all("a", href=True):
-            if a.get_text(strip=True) != "議事録":
+            # 「議事録」だけでなく「議事録［TXT形式：126KB］」（2007〜2010年の .txt）も拾う（2026-10-04 データ係）。
+            # 完全一致だけだと第109〜174回の66回が一度も取得されていなかった。
+            if not unicodedata.normalize("NFKC", a.get_text(strip=True)).startswith("議事録"):
                 continue
             href = a["href"]
             url = href if href.startswith("http") else BASE + href
@@ -110,10 +114,15 @@ def main():
         if os.path.exists(path):
             skip += 1
             continue
+        mc = re.search(r"第\s*(\d+)\s*回", unicodedata.normalize("NFKC", l["ctx"]))
+        if MIN_KAI and mc and int(mc.group(1)) < MIN_KAI:     # 取る前に索引の行で判定（厚労省に余計な取得をしない）
+            continue
         try:
             html = get(l["url"])
             title, text = extract_text(html)
-            m = re.search(r"第(\d+)回", title + " " + l["ctx"])
+            # 回番号は索引の行（ctx）から先に取る。厚労省のページの <title> が「第480回議事録（2021年5月26日）」のまま
+            # 使い回されている回があり、<title> を先に見ると2021年の13回・2013年の1回が別の回として入った（2026-10-04 データ係）。
+            m = re.search(r"第\s*(\d+)\s*回", unicodedata.normalize("NFKC", l["ctx"])) or re.search(r"第(\d+)回", title)
             rec = {
                 "kai": int(m.group(1)) if m else None,
                 "title": title[:200],
