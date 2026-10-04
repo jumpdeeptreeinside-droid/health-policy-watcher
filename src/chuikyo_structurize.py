@@ -123,9 +123,20 @@ def parse_meeting(rec: dict) -> list:
 
 
 def main():
+    # 🔴 --rebuild は**使わない**（2026-10-04 -81 と合意）。
+    #    表を作り直すと発言の id が振り直され、政策研究の論点レポートが引いている
+    #    引用（発言DB id で指している）が別の発言を指す。404にならないので気づけない。
+    #    （同じ型の事故を同じ日に記事の番号で踏んだ＝[[feedback_mark_done_only_after_push]]）
+    #    埋めるときは差分で足す。id は不変のまま kai だけ付け直すのが正しいやり方。
     rebuild = "--rebuild" in sys.argv
     db = sqlite3.connect(DB)
     if rebuild:
+        print("🔴 --rebuild は発言の id を振り直します。論点レポートの引用が壊れます。")
+        print("   本当に作り直すなら、引用の id を使っている資料（論点レポート・告知回の原稿）を")
+        print("   先に作り直す段取りを決めてください。中断します。")
+        print("   どうしても必要なときは環境変数 CHUIKYO_ALLOW_REBUILD=1 を付けてください。")
+        if os.environ.get("CHUIKYO_ALLOW_REBUILD") != "1":
+            raise SystemExit(2)
         db.execute("DROP TABLE IF EXISTS chuikyo_utt")
         db.execute("DROP TABLE IF EXISTS chuikyo_utt_fts")
     db.execute("""CREATE TABLE IF NOT EXISTS chuikyo_utt (
