@@ -110,6 +110,30 @@ def _title_of(props: dict) -> str:
     return ""
 
 
+def checkout_staleness(art_dir: str) -> list:
+    """🔴 監査は**手元のクローン**を読む。自動デプロイは別のクローン
+    （~/crosshealthjp_deploy）を使うので、ここは勝手に新しくならない。
+    古い材料で「異常あり/なし」を言うと嘘になる（2026-10-04 実際に5コミット遅れていて、
+    本番では直っている題を「まだ of が残っている」と報告しかけた）。"""
+    import subprocess
+    repo = os.path.abspath(os.path.join(art_dir, "..", ".."))
+    if not os.path.isdir(os.path.join(repo, ".git")):
+        return [("検査", "記事の置き場がgitの中にない＝新しさを確かめられない", repo)]
+    def g(*a):
+        r = subprocess.run(["git"] + list(a), cwd=repo, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=120)
+        return r.returncode, (r.stdout or "").strip()
+    g("fetch", "--quiet")
+    rc, br = g("branch", "--show-current")
+    rc, n = g("rev-list", "--count", f"HEAD..origin/{br}")
+    behind = int(n) if n.isdigit() else -1
+    print(f"  材料の新しさ: {repo} は origin/{br} より {behind}コミット遅れ")
+    if behind > 0:
+        return [("検査", f"手元のクローンが{behind}コミット遅れている＝この結果は信用できない",
+                 f"{repo} で git pull してから測り直す")]
+    return []
+
+
 def audit(articles: dict, episodes: list, rows, strict=True) -> list:
     bad = []
     # ── A/B: Notion 側
@@ -212,7 +236,7 @@ def main() -> int:
         print(f"  ⚠️ Notion を読めない: {e}")
         rows = None
 
-    bad = audit(articles, episodes, rows)
+    bad = checkout_staleness(ART_DIR) + audit(articles, episodes, rows)
     print()
     if not bad:
         print("✅ 異常なし")
