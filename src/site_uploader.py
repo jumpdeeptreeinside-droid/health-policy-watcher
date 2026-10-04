@@ -135,6 +135,20 @@ class SiteUploader(NotionWordPressUploader):
                           r"(?![A-Za-z])", re.I)
     _JP_CH = r"\u3040-\u30ff\u4e00-\u9fff\uff01-\uff60"
 
+    # 🔴 文字化けの検出（2026-10-04 -06の指摘）。実例＝厚労省のPDF名が
+    #    「(з—…йҷўгҒ®иҖҗйңҮ…pdf, Page 1)」。**Notionの原文の時点で化けている**ので
+    #    変換の encoding を直しても消えない（908本中1本だけ・キリル文字で見分けられる）。
+    #    日本語の記事にキリル文字が出ることは無いので、出たら化けと断じてよい。
+    _MOJI = re.compile(r"[\u0400-\u04ff\u0500-\u052f]")
+
+    @classmethod
+    def _content_warnings(cls, title: str, html: str) -> list:
+        out = list(cls._title_warnings(title))
+        n = len(cls._MOJI.findall(html or ""))
+        if n:
+            out.append(f"本文に文字化けの疑い（キリル文字が{n}個）。原文のPDF名が化けている例があります")
+        return out
+
     @classmethod
     def _title_warnings(cls, title: str) -> list:
         """🔴 判定は『日本語の字数』ではなく『前置詞が日本語の字に隣接しているか』。
@@ -243,7 +257,7 @@ class SiteUploader(NotionWordPressUploader):
                 json.dump(rec, f, ensure_ascii=False, indent=1)
             site_url = f"{SITE_BASE_URL}/articles/{pid}/"
             logger.info(f"  ✅ 記事JSON生成: {os.path.basename(out_path)} → {site_url}")
-            for w in self._title_warnings(title):
+            for w in self._content_warnings(title, html_content):
                 logger.warning(f"  ⚠️  {w}")
                 title_warnings.append({"pid": pid, "title": title, "why": w})
 

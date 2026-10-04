@@ -14,6 +14,7 @@
   B 同じ記事番号を2行以上が名乗っていないか（＝番号の再利用）
   C 配信済みエピソードの説明欄が指す記事が実在するか
   D 日本語の題に英単語の前置詞が残っていないか
+  E 本文に文字化け（キリル文字）が無いか
 
 🔴 対象が0件なら「異常なし」ではなく**検査が届いていない**として落とす
    （[[feedback_checks_can_silently_no_op]]）。
@@ -57,13 +58,18 @@ def title_warning(title: str):
     return sorted(set(hits))
 
 
+MOJI = re.compile(r"[\u0400-\u04ff\u0500-\u052f]")
+
+
 def load_articles(d: str) -> dict:
+    """返りは pid → (題, 本文)。本文は E（文字化け）の検査に使う。"""
     out = {}
     for p in glob.glob(os.path.join(d, "*.json")):
         try:
             with open(p, encoding="utf-8") as f:
                 rec = json.load(f)
-            out[os.path.basename(p)[:-5]] = rec.get("title") or ""
+            out[os.path.basename(p)[:-5]] = (rec.get("title") or "",
+                                             (rec.get("html") or "") + (rec.get("summary") or ""))
         except Exception as e:
             print(f"  ⚠️ 読めない記事ファイル {os.path.basename(p)}: {e}")
     return out
@@ -135,17 +141,23 @@ def audit(articles: dict, episodes: list, rows, strict=True) -> list:
     # ── D: 題
     if strict and not articles:
         bad.append(("検査", "記事が0件＝検査が届いていない", ""))
-    for pid, t in sorted(articles.items()):
+    for pid, v in sorted(articles.items()):
+        t, body = v if isinstance(v, tuple) else (v, "")
         w = title_warning(t)
         if w:
             bad.append(("D 題に英単語", pid, f"{w} {t[:50]}"))
+        n = len(MOJI.findall(body))
+        if n:
+            bad.append(("E 本文が文字化け", pid, f"キリル文字{n}個  {t[:40]}"))
     return bad
 
 
 def self_test() -> int:
     """わざと壊した材料を流して、検査が本当に捕まえるかを見る（陽性対照）。"""
     print("=== 陽性対照：わざと壊した材料で検査が落ちるか ===")
-    articles = {"2026010101": "正しい題です", "2026010102": "日本語の題に of 英単語"}
+    articles = {"2026010101": ("正しい題です", "きれいな本文"),
+                "2026010102": ("日本語の題に of 英単語", "きれいな本文"),
+                "2026010103": ("正しい題です", "化けた本文 (з—…йҷўгҒ®)")}
     episodes = [{"title": "生きている回", "description": "/articles/2026010101/"},
                 {"title": "死んだ回", "description": "/articles/9999999999/"}]
     rows = [
@@ -160,14 +172,14 @@ def self_test() -> int:
     kinds = {b[0].split()[0] for b in bad}
     for b in bad:
         print(f"    捕まえた  {b[0]:<20} {b[1]}  {b[2]}")
-    want = {"A", "B", "C", "D"}
+    want = {"A", "B", "C", "D", "E"}
     missing = want - kinds
-    print(f"\n  4種のうち捕まえた: {sorted(kinds)}")
+    print(f"\n  5種のうち捕まえた: {sorted(kinds)}")
     if missing:
         print(f"  🔴 捕まえられない種類がある: {sorted(missing)}")
         return 1
     # 陰性対照：きれいな材料なら0件か
-    clean = audit({"2026010101": "正しい題です"},
+    clean = audit({"2026010101": ("正しい題です", "きれいな本文")},
                   [{"title": "回", "description": "/articles/2026010101/"}],
                   [{"properties": {"Name": {"type": "title", "title": [{"plain_text": "行"}]},
                                    "URL(Web)": {"type": "url",
@@ -215,6 +227,7 @@ def main() -> int:
     print("  B 番号の重複            … 古い行の URL(Web) を消して作り直す（配信済みの説明欄は人が直す）")
     print("  C 説明欄が死んでいる    … episodes.json の説明欄を直す（crosshealthjp 側・人が判断）")
     print("  D 題に英単語            … Notion の題を直し、記事ファイルの title も直す")
+    print("  E 本文が文字化け        … 原文（Notion）の時点で化けている。原典でPDF名を確かめて直す")
     return 1
 
 
