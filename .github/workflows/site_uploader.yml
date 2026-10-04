@@ -23,6 +23,8 @@ jobs:
           repository: jumpdeeptreeinside-droid/crosshealthjp
           ssh-key: ${{ secrets.SITE_DEPLOY_KEY }}
           path: site
+          # 🔴 pull --rebase を site_uploader.py の中でやるので、浅いクローンでは足りない
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -41,16 +43,15 @@ jobs:
           SITE_ARTICLES_DIR: ${{ github.workspace }}/site/src/articles-data
         run: python src/site_uploader.py
 
-      - name: Commit & push to crosshealthjp
+      # 🔴 2026-10-04: push は site_uploader.py の中でやる（push が通ってから Notion に書く）。
+      # ここは「消し忘れが残っていないか」の安全網だけ。commit も push もしない。
+      - name: Leftover check (no commit here)
+        if: always()
         run: |
           cd site
           if [ -n "$(git status --porcelain src/articles-data)" ]; then
-            git config user.name "CrossHealth Watcher Bot"
-            git config user.email "info@crosshealthjp.org"
-            git add src/articles-data
-            git commit -m "watcher: 記事の自動公開"
-            git push
-            echo "pushed: Cloudflare Pages が数分でデプロイします"
-          else
-            echo "新規記事なし（pushスキップ）"
+            echo "::error::articles-data に未コミットの残りがあります（site_uploader.py が片付けに失敗）"
+            git status --porcelain src/articles-data
+            exit 1
           fi
+          echo "残りなし"

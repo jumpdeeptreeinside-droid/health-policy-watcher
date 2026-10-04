@@ -10,8 +10,14 @@ WordPress版（notion_wordpress_uploader.py）の置き換え。tekutekuradio �
 1. Status(Web) = 「投稿待ち」のページを検出（従来と同じ）
 2. Article(Web) リンク先の Notion ページ本文を取得 → Markdown → HTML（従来のコンバータを再利用）
 3. crosshealthjp の src/articles-data/<pid>.json を生成（SITE_ARTICLES_DIR 配下）
-   → 呼び出し元の GitHub Actions が crosshealthjp へ commit & push → Cloudflare Pages が自動デプロイ
-4. 成功時: URL(Web)=サイトURL / PodcastDescription更新 / Status(Web)=完了 / Date(Web)記録（従来と同じ）
+4. 🔴 **この中で commit & push する**。push が通ってから Notion に書く（2026-10-04）
+   旧実装は「JSONを書く→Notionを完了にする」を先にやり、commit & push を
+   GitHub Actions の別の段に任せていた。2026-09-23 15:08 の実行で push 段が落ち、
+   **Notionは完了・URL(Web)も入っているのに記事はrepoに無い**状態の行が3つ残った。
+   次の実行は「完了」を見て作り直さないので、恒久的に穴になった。
+   さらに番号(pid)は既存ファイルの有無で決めるため、消えた01/02は後の記事に再利用され
+   **配信済みの説明欄が別の記事を指す**状態になった（404にならないので気づけない）。
+5. 成功時: URL(Web)=サイトURL / PodcastDescription更新 / Status(Web)=完了 / Date(Web)記録
 
 必要な環境変数:
   NOTION_API_KEY, NOTION_DATABASE_ID（従来どおり）
@@ -23,6 +29,7 @@ import html as html_lib
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime
 
@@ -51,7 +58,7 @@ def _to_text(h: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html_lib.unescape(h))).strip()
 
 
-def send_site_notification(uploaded: list) -> None:
+def send_site_notification(uploaded: list, title_warnings: list = None) -> None:
     """サイト公開完了の通知メール"""
     import smtplib
     from email.mime.multipart import MIMEMultipart
@@ -66,6 +73,11 @@ def send_site_notification(uploaded: list) -> None:
         f"以下の記事が https://www.crosshealthjp.org に自動公開されました（数分でデプロイ反映）。\n\n"
         f"■ 公開記事（{len(uploaded)}件）\n" + "\n".join(lines) + "\n"
     )
+    # 題に英単語が残った分は必ず知らせる（2026-10-04・直すのは人。公開は止めていない）
+    if title_warnings:
+        body += ("\n■ ⚠️ 題の確認が必要（" + str(len(title_warnings)) + "件）\n"
+                 + "\n".join(f"  [{w['pid']}] {w['why']}\n      {w['title']}"
+                              for w in title_warnings) + "\n")
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"【完了】サイト自動公開 {len(uploaded)}件"
     msg["From"] = GMAIL_ADDRESS
@@ -83,6 +95,62 @@ def send_site_notification(uploaded: list) -> None:
 
 class SiteUploader(NotionWordPressUploader):
     """WordPress の代わりに crosshealthjp の articles-data JSON を生成する"""
+
+    @staticmethod
+    def _git(args: list, cwd: str) -> tuple:
+        r = subprocess.run(["git"] + args, cwd=cwd, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=180)
+        return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+    def _commit_and_push(self, repo: str, n: int) -> bool:
+        """🔴 push が通って初めて True。通らなければ Notion を一切触らない。"""
+        rc, out = self._git(["status", "--porcelain", "src/articles-data"], repo)
+        if rc != 0:
+            logger.error(f"  ❌ git status が失敗: {out[:200]}"); return False
+        if not out.strip():
+            logger.error("  ❌ 書いたはずの記事が git から見えません（置き場所が違う）"); return False
+        for args in (["config", "user.name", "CrossHealth Watcher Bot"],
+                     ["config", "user.email", "info@crosshealthjp.org"],
+                     ["add", "src/articles-data"],
+                     ["commit", "-m", f"watcher: 記事の自動公開（{n}本）"]):
+            rc, out = self._git(args, repo)
+            if rc != 0:
+                logger.error(f"  ❌ git {args[0]} が失敗: {out[:300]}"); return False
+        # 🔴 他のセッション/自動化が先に push していると素の push は落ちる（実際に落ちた）
+        rc, out = self._git(["pull", "--rebase", "--autostash"], repo)
+        if rc != 0:
+            logger.error(f"  ❌ git pull --rebase が失敗: {out[:300]}"); return False
+        rc, out = self._git(["push"], repo)
+        if rc != 0:
+            logger.error(f"  ❌ git push が失敗: {out[:300]}")
+            logger.error("     → Notion は「投稿待ち」のままにします。次の実行でやり直されます。")
+            return False
+        logger.info(f"  ✅ crosshealthjp へ push（{n}本）。Cloudflare Pages が数分でデプロイします")
+        return True
+
+    # 日本語の題に英単語の前置詞が残る生成事故（2026-10-04 -06の指摘・実例
+    # 「令和8年度診療報酬改定と指導・監査 of 最新動向」）。公開は止めない（記事が無いほうが害が大きい）が
+    # 必ずログと通知に出す。
+    _EN_PREP = re.compile(r"(?<![A-Za-z])(of|in|on|for|with|to|from|by|at|and|the|as|through)"
+                          r"(?![A-Za-z])", re.I)
+    _JP_CH = r"\u3040-\u30ff\u4e00-\u9fff\uff01-\uff60"
+
+    @classmethod
+    def _title_warnings(cls, title: str) -> list:
+        """🔴 判定は『日本語の字数』ではなく『前置詞が日本語の字に隣接しているか』。
+        字数で切ると「WHOがin日本で」のような短い題を取りこぼす（2026-10-04 の試験で発覚）。
+        英語だけの題（海外ヘッドラインの原題）は隣に日本語が来ないので当たらない。"""
+        hits = []
+        for m in cls._EN_PREP.finditer(title):
+            left = title[:m.start()].rstrip()
+            right = title[m.end():].lstrip()
+            touches_jp = bool(re.search(f"[{cls._JP_CH}]$", left)) or \
+                         bool(re.match(f"[{cls._JP_CH}]", right))
+            if touches_jp:
+                hits.append(m.group(0).lower())
+        if not hits:
+            return []
+        return [f"日本語の題に英単語が残っています: {sorted(set(hits))}"]
 
     def _next_pid(self) -> str:
         """pid = YYYYMMDDNN（日付+連番2桁）。既存ファイルと衝突しない番号を返す"""
@@ -124,6 +192,8 @@ class SiteUploader(NotionWordPressUploader):
 
         success_count = 0
         uploaded: list = []
+        pending: list = []          # push が通ってから Notion に書く分
+        title_warnings: list = []   # 題に英単語が残った分（公開は止めない）
 
         for page in pages:
             page_id = page.get('id')
@@ -173,34 +243,69 @@ class SiteUploader(NotionWordPressUploader):
                 json.dump(rec, f, ensure_ascii=False, indent=1)
             site_url = f"{SITE_BASE_URL}/articles/{pid}/"
             logger.info(f"  ✅ 記事JSON生成: {os.path.basename(out_path)} → {site_url}")
+            for w in self._title_warnings(title):
+                logger.warning(f"  ⚠️  {w}")
+                title_warnings.append({"pid": pid, "title": title, "why": w})
 
-            # ── Notion 書き戻し（従来と同じ流儀）
-            if self.update_notion_url_web(page_id, site_url):
-                logger.info(f"  ✅ Notion URL(Web) 更新: {site_url}")
-            if self.update_podcast_description(page_id, site_url):
-                logger.info("  ✅ Notion PodcastDescription 更新完了")
-            if self.update_notion_status(page_id, "完了"):
-                logger.info("  ✅ Notion ステータス更新: 投稿待ち → 完了")
+            # 🔴 ここでは Notion を触らない。push が通ってから下でまとめて書く（2026-10-04）
+            pending.append({"page_id": page_id, "pid": pid, "path": out_path,
+                            "site_url": site_url, "title": title, "today": today})
+            continue
 
-            import requests as _rq
-            try:
-                resp = _rq.patch(
-                    f"{self.notion_base}/pages/{page_id}",
-                    headers=self.notion_headers,
-                    json={"properties": {"Date(Web)": {"date": {"start": today}}}},
-                    timeout=30,
-                )
-                resp.raise_for_status()
-                logger.info(f"  ✅ Date(Web) 記録: {today}")
-            except Exception as e:
-                logger.warning(f"  ⚠️  Date(Web) 記録失敗: {e}")
 
-            success_count += 1
-            uploaded.append({"title": title, "url": site_url})
+        # ───────── push が通ってから Notion に書く（2026-10-04 の作り直し） ─────────
+        if not pending:
+            logger.info("書き出した記事がありません。Notion は触りません。")
+            return 0
+        repo = os.path.abspath(os.path.join(SITE_ARTICLES_DIR, "..", ".."))
+        if not self._commit_and_push(repo, len(pending)):
+            # 🔴 push できなかったら書いたファイルを消す。
+            #    残すと次の実行の _next_pid が番号を進め、消えた番号が別記事に再利用される
+            #    （2026-09-23 に起きたのがこれ）。
+            for it in pending:
+                try:
+                    os.remove(it["path"])
+                    logger.info(f"  片付け: {os.path.basename(it['path'])} を消しました")
+                except OSError as e:
+                    logger.warning(f"  片付けに失敗: {e}")
+            logger.error(f"❌ push できなかったので {len(pending)} 本を公開しませんでした"
+                         "（Notion は「投稿待ち」のまま＝次の実行でやり直します）")
+            return 0
+
+        for it in pending:
+            logger.info("-" * 40)
+            logger.info(f"Notion に書き戻し: {it['title'][:50]}")
+            if self._write_back(it):
+                success_count += 1
+                uploaded.append({"title": it["title"], "url": it["site_url"]})
 
         if uploaded:
-            send_site_notification(uploaded)
+            send_site_notification(uploaded, title_warnings)
         return success_count
+
+    def _write_back(self, it: dict) -> bool:
+        """push 済みの1本について Notion を更新する。"""
+        page_id, site_url = it["page_id"], it["site_url"]
+        if self.update_notion_url_web(page_id, site_url):
+            logger.info(f"  ✅ Notion URL(Web) 更新: {site_url}")
+        if self.update_podcast_description(page_id, site_url):
+            logger.info("  ✅ Notion PodcastDescription 更新完了")
+        if self.update_notion_status(page_id, "完了"):
+            logger.info("  ✅ Notion ステータス更新: 投稿待ち → 完了")
+        import requests as _rq
+        try:
+            resp = _rq.patch(
+                f"{self.notion_base}/pages/{page_id}",
+                headers=self.notion_headers,
+                json={"properties": {"Date(Web)": {"date": {"start": it["today"]}}}},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            logger.info(f"  ✅ Date(Web) 記録: {it['today']}")
+        except Exception as e:
+            logger.warning(f"  ⚠️  Date(Web) 記録失敗: {e}")
+        return True
+
 
 
 def main():
