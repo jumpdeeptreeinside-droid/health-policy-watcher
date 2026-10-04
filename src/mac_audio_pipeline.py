@@ -395,13 +395,48 @@ def publish_episode(mp3_path: str, title: str, description: str = "") -> str:
         print(f"  ✗ feed生成失敗: {r.stderr[-200:]}")
         return ""
 
-    for cmd in (["git", "add", "public/podcast"],
-                ["git", "commit", "-q", "-m", f"podcast: {title[:50]}"],
-                ["git", "push", "-q"]):
-        r = subprocess.run(cmd, cwd=SITE_REPO, capture_output=True, text=True)
+    # 🔴 push は押し直す（2026-10-04）。上の pull は**作業の前**に1回だけで、
+    #    mp3のコピーとfeed生成に数秒かかるあいだに他の自動化がpushすると、
+    #    最後の素のpushが落ちる。落ちると「mp3は置いたのにフィードに出ない」が残り、
+    #    しかも戻り値が空なので呼び出し元は「公開していない」と扱う＝黙って滞留する。
+    #    （同じ型が site_uploader.py で実際に事故を起こした＝記事3本が恒久の穴になった）
+    #    やり直しは安全：同じ題の既存エントリは上で外しているし、mp3名は
+    #    日付+題のmd5で決まるので同じファイルになる（冪等）。
+    def _git(args: list):
+        return subprocess.run(["git"] + args, cwd=SITE_REPO, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", timeout=180)
+
+    for args in (["add", "public/podcast"],
+                 ["commit", "-q", "-m", f"podcast: {title[:50]}"]):
+        r = _git(args)
         if r.returncode != 0:
-            print(f"  ✗ {' '.join(cmd[:2])} 失敗: {r.stderr[-200:]}")
+            print(f"  ✗ git {args[0]} 失敗: {(r.stderr or r.stdout)[-200:]}")
             return ""
+    pushed, why = False, ""
+    for attempt in range(1, 4):
+        r = _git(["push", "-q"])
+        if r.returncode == 0:
+            pushed = True
+            break
+        why = (r.stderr or r.stdout or "")[-200:]
+        print(f"  ⚠️ push {attempt}回目が失敗（他の自動化と競合した可能性）: {why}")
+        pr = _git(["pull", "--rebase", "--autostash", "--quiet"])
+        if pr.returncode != 0:
+            why = (pr.stderr or pr.stdout or "")[-200:]
+            print(f"  ✗ 押し直すための pull も失敗: {why}")
+            break
+    if not pushed:
+        # 🔴 黙って止まらない。Status(Podcast)は「公開待ち」のままなので次の毎時で
+        #    やり直されるが、競合が続くなら人が見る必要がある。
+        print(f"  ✗ Podcast公開に失敗（pushが通らない）: {title[:50]}")
+        send_mail(f"【公開失敗】{title[:50]}",
+                  "Podcastのpushが通りませんでした（3回試行）。\n"
+                  "mp3とepisodes.jsonは手元のcrosshealthjpにcommit済みですが、"
+                  "まだ外に出ていません。\n"
+                  "Status(Podcast)は「公開待ち」のままなので次の毎時でやり直します。\n"
+                  "続く場合は ~/crosshealthjp で git status / git log を確認してください。\n\n"
+                  f"最後のエラー:\n{why}")
+        return ""
     print(f"  ✅ Podcast公開: {url}（数分でフィード反映→各プラットフォームが自動取得）")
     return url
 
