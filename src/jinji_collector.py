@@ -642,6 +642,14 @@ def build_weekly_section(days=7) -> str:
 
 BLOCK_FLAG = os.path.join(OUT_DIR, "section_blocked.flag")
 
+# 欄の**作成日**を機械が読めるようにする印（モリの依頼・サクマさん決定 2026-10-18）。
+#   publish_weekly.py は md の1行目のこの行を読んで今日と照らし、今日でなければ公開を止める。
+#   差し込む前にこの行を取り除くので、会員の1冊には出ない。
+#   ファイルの mtime では照らさない（コピー・touch・再配置で日付が変わる＝作ったときの日付ではない）。
+# 🔴 形を変えるときは publish_weekly.py の正規表現と**同時に**変える（先に言う）。
+#    印が無い＝「作成日が読めない」として向こうが止まるので、消すだけでも公開が止まる。
+CREATED_MARK = "<!-- jinji-section-created: {} -->"
+
 
 def write_section(days=7):
     """セクションを作る。**窓が不完全なら止める側に倒す**（サクマさん決定 2026-10-17）。
@@ -659,9 +667,15 @@ def write_section(days=7):
        猶予は1時間ほどしかない。**止めるのは publish_weekly 側（1冊を作る時点）**で、
        `section_blocked.flag` を見る行をそこに入れる必要がある（モリが担当・crosshealthjp）。
        commit 時刻を公開時刻と読み違えたのが原因＝[[feedback_which_field_did_you_read]]。
+
+    md の1行目には作成日の印（CREATED_MARK）を置く。publish_weekly 側は
+    「印が無い＝作成日が読めない」「印の日付が今日でない＝毎朝のジョブが止まっている」
+    のどちらでも公開を止める（モリ 2026-10-18）。mtime では照らさない。
     """
     os.makedirs(OUT_DIR, exist_ok=True)
-    md = build_weekly_section(days)
+    # 1行目に作成日の印を置く（publish_weekly が今日と照らす・向こうが取り除いてから差し込む）。
+    # 返す文字列もファイルと同じ形にする（出口を2つにしない＝片方だけ印が無い状態を作らない）。
+    md = CREATED_MARK.format(date.today().isoformat()) + "\n" + build_weekly_section(days)
     h = window_health(days)
     dated = os.path.join(OUT_DIR, f"section_{date.today().strftime('%Y%m%d')}.md")
     latest = os.path.join(OUT_DIR, "section_latest.md")
@@ -1012,6 +1026,33 @@ def self_test() -> bool:
                any(w in sent[0][0] + sent[0][1] for w in ("株式", "お知らせ", "ep", ".json")), False)
             eq("セクション自体は残す（中を見て決められるように）",
                os.path.exists(os.path.join(tmp, "section_latest.md")), True)
+
+            # --- 作成日の印（モリ 2026-10-18）。照らす形は publish_weekly 側に書く正規表現そのまま。
+            #     こちらの CREATED_MARK では照らさない（同じ式を2回書くと食い違いが見つからない）。
+            MARK_RE = r"^<!-- jinji-section-created: (\d{4}-\d{2}-\d{2}) -->$"
+            body_b = open(os.path.join(tmp, "section_latest.md"), encoding="utf-8").read()
+            m = re.match(MARK_RE, body_b.split("\n")[0])
+            eq("1行目が作成日の印になっている", bool(m), True)
+            eq("印の日付は今日", m.group(1) if m else None, date.today().isoformat())
+            eq("止める週の欄にも印は入る（止めの判断より前に読まれる行なので）",
+               bool(re.match(MARK_RE, body_b.split("\n")[0])), True)
+            eq("日付入りのファイルにも入る",
+               bool(re.match(MARK_RE, open(os.path.join(
+                   tmp, "section_" + date.today().strftime("%Y%m%d") + ".md"),
+                   encoding="utf-8").read().split("\n")[0])), True)
+            eq("印は1本に1回だけ（1行取り除けば残らない）",
+               body_b.count("jinji-section-created"), 1)
+            stripped = "\n".join(body_b.split("\n")[1:])
+            eq("1行取り除くと本文の見出しから始まる",
+               (stripped.startswith("## 今週の人事ウォッチ"), "jinji-section-created" in stripped),
+               (True, False))
+            eq("返す文字列はファイルと同じ形（片方だけ印が無い状態を作らない）", md_b, body_b)
+            # 一度落としてみる：印を付けない形（前の版）だと向こうの正規表現は当たらない＝公開は止まる
+            with mock.patch(__name__ + ".load_state", return_value={"tdnet_days": one_bad}):
+                eq("印が無ければ「作成日が読めない」になる（前の版で落ちることを見る）",
+                   bool(re.match(MARK_RE, build_weekly_section().split("\n")[0])), False)
+            eq("印に社名・人名・会員メールは入らない（ntfy と同じ線）",
+               any(w in body_b.split("\n")[0] for w in ("株式", "@", "/Users/", "ep")), False)
             with mock.patch(__name__ + ".load_state", return_value={"tdnet_days": allok}):
                 md_g, okflag_g = write_section()
             eq("全部読めた週は ok=True を返す", okflag_g, True)
