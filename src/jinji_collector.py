@@ -40,6 +40,9 @@ STATE = os.path.join(DATA, "state.json")
 OUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "output", "jinji")
 UA = {"User-Agent": "Mozilla/5.0 (CrossHealth research; contact: info@crosshealthjp.org)"}
 WAIT = 1.5
+# 1日のページ送りの上限（暴走止め）。🔴 ここに当たったら黙って打ち切らず ok=False で返す
+#（件数で打ち切って黙る、が今回直した不具合そのものなので、同じ形を作らない）。実測の最大は6ページ。
+MAX_PAGES = 40
 
 KANBU_INDEX = "https://www.mhlw.go.jp/kouseiroudoushou/kanbumeibo/index.html"
 TDNET_LIST = "https://www.release.tdnet.info/inbs/I_list_{page:03d}_{ymd}.html"
@@ -386,7 +389,9 @@ def tdnet_day(d: date, seen: set):
                      "hits": len(evs), "ok": ok, "why": why}
 
     evs, rows, pages, page = [], 0, 0, 1
-    while page <= 40:
+    while True:
+        if page > MAX_PAGES:
+            return done(pages, rows, False, f"ページが{MAX_PAGES}を超えました（読み切れていません）")
         try:
             html = get(TDNET_LIST.format(page=page, ymd=ymd))
         except urllib.error.HTTPError as e:
@@ -714,6 +719,15 @@ CONTROL_MA = "米国IntraBio社の完全子会社化に関するお知らせ"   
 CONTROL_NOT_MA = "臨時株主総会招集のための基準日設定に関するお知らせ"  # 7459 メディパルHD 10/13 15:30 page2
 
 
+def _page_cap_control():
+    """ページ上限に当たったとき、黙って打ち切らず ok=False で返すかを本物で確かめる。
+    返り値 = (ok, 理由に「ページが」が入っているか)"""
+    import unittest.mock as mock
+    with mock.patch(__name__ + ".MAX_PAGES", 1):
+        _, info = tdnet_day(date(2026, 10, 13), set())   # 4ページある日を上限1ページで読む
+    return info["ok"], "ページが" in info["why"]
+
+
 def classifier_control() -> bool:
     """語の層が生きているかを本物の開示1本で確かめる（0件を信じる前に必ず通す）。"""
     topic, _ = classify(CONTROL_MA)
@@ -790,6 +804,8 @@ def self_test() -> bool:
         eq("いまは2ページ目以降も読む", info["pages"] >= 2, True)
         eq("10/13 の開示は300件を超える", info["rows"] > 300, True)
         eq("その日は読めた扱い", info["ok"], True)
+        eq("ページ上限に当たったら ok=False（黙って打ち切らない）",
+           _page_cap_control(), (False, True))
         print("④ 0件の裏取り（陽性対照）")
         _, e1 = tdnet_day(date(2026, 10, 11), set())   # 日曜＝開示なし
         eq("日曜は『開示なし』の文で0件を裏取りできる", (e1["rows"], e1["ok"]), (0, True))
