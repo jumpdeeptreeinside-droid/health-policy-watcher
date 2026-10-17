@@ -139,7 +139,10 @@ MA_VETO = (
     ("自己株式",         r"自己株式"),
     ("新株予約権",       r"新株予約権|ストックオプション"),
     ("株式報酬",         r"譲渡制限付株式報酬|株式報酬|役員報酬"),
-    ("資産の譲渡",       r"(?:資産|不動産|信託受益権|物件|土地|建物)(?:等)?[^。]{0,10}?(?:の)?譲渡"),
+    # 🔴 間を [^。]{0,10} で空けると「不動産子会社**の株式**譲渡」をまたいで伏せ、
+    #    本物の株式譲渡を消していた（ミハル監査 10/17）。間に本物の語が来たら当たらない形にする。
+    ("資産の譲渡",       r"(?:資産|不動産|信託受益権|物件|土地|建物)(?:等)?"
+                        r"(?:(?!株式|子会社|孫会社|持分|事業|会社)[^。]){0,10}?(?:の)?譲渡"),
     ("ファンド持分",     r"(?:匿名組合|投資事業有限責任組合|ファンド)[^。]{0,8}(?:出資)?持分"),
     ("役職の異動",       r"(?:執行)?役員の異動|(?:代表)?取締役の異動|人事異動"),
 )
@@ -397,7 +400,15 @@ def tdnet_day(d: date, seen: set):
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 if page == 1:
-                    return done(0, 0, True, "一覧なし（404）")
+                    # 🟡 404 は2つの意味がある（ミハル監査 10/17）。
+                    #    ・まだ先の日付／土日 → 一覧が無いのが正しい
+                    #    ・過去の平日 → TDnet の保管期間（およそ40日）を過ぎた＝**読めなかった**
+                    #      これを「0件」と記録すると、遡れない日が静かに「開示なし」になる。
+                    if d > date.today():
+                        return done(0, 0, True, "まだ先の日付（一覧なし）")
+                    if d.weekday() >= 5:
+                        return done(0, 0, True, "一覧なし（404・土日）")
+                    return done(0, 0, False, "平日なのに一覧が404（保管期間を過ぎて遡れない日）")
                 break  # 最後のページの次＝正常な終わり
             return done(pages, rows, False, f"page{page} が HTTP {e.code}")
         except Exception as e:
@@ -434,6 +445,10 @@ def tdnet_day(d: date, seen: set):
                         "collected": datetime.now().isoformat(timespec="seconds")})
         pages, rows = page, rows + n
         if n == 0:
+            if page > 1:
+                # 🟡 最後のページの次は 404 が返る（実測）。200 で0件は本来起きない形なので
+                #    「終わった」と決めずに読めなかった扱いにする（ミハル監査 10/17）。
+                return done(pages, rows, False, f"page{page} が200で0件（最後のページの次は404のはず）")
             if page == 1:
                 # 0件の裏取り（陽性対照）。日付も照らす＝別の日のページを読んでいないこと。
                 # 🔴 一覧の日付は0埋め（「2026年09月19日」）。埋めずに照らすと一桁の月日で全部外れる
@@ -719,12 +734,31 @@ CONTROL_MA = "米国IntraBio社の完全子会社化に関するお知らせ"   
 CONTROL_NOT_MA = "臨時株主総会招集のための基準日設定に関するお知らせ"  # 7459 メディパルHD 10/13 15:30 page2
 
 
-def _page_cap_control():
+def _recent_multipage_day(back=14):
+    """直近の平日から遡って、page1 が満杯（＝2ページ目がある）日を1つ返す。
+    🟡 自己検査に日付を直書きすると、保管期間（約40日）を過ぎた日で中身のないまま通る。"""
+    d = date.today() - timedelta(days=1)
+    for _ in range(back):
+        if d.weekday() < 5:
+            try:
+                html = get(TDNET_LIST.format(page=1, ymd=d.strftime("%Y%m%d")))
+                n = sum(1 for tr in BeautifulSoup(html, "html.parser").find_all("tr")
+                        if len(tr.find_all("td")) >= 4
+                        and re.match(r"^[0-9A-Z]{5}$", tr.find_all("td")[1].get_text(strip=True)))
+                if n >= 100:
+                    return d
+            except Exception:
+                pass
+        d -= timedelta(days=1)
+    return None
+
+
+def _page_cap_control(d):
     """ページ上限に当たったとき、黙って打ち切らず ok=False で返すかを本物で確かめる。
     返り値 = (ok, 理由に「ページが」が入っているか)"""
     import unittest.mock as mock
     with mock.patch(__name__ + ".MAX_PAGES", 1):
-        _, info = tdnet_day(date(2026, 10, 13), set())   # 4ページある日を上限1ページで読む
+        _, info = tdnet_day(d, set())   # 2ページ以上ある日を上限1ページで読む
     return info["ok"], "ページが" in info["why"]
 
 
@@ -762,6 +796,9 @@ def self_test() -> bool:
         ("譲渡制限付株式報酬としての自己株式の処分の払込完了に関するお知らせ", None),
         ("ストックオプション（新株予約権）の発行に関するお知らせ", None),
         ("連結子会社による資産（レジデンス7物件）の譲渡のお知らせ", None),
+        # 🔴 伏せる範囲が広すぎて本物の株式譲渡をまたいでいた（ミハル監査 10/17 の見本）
+        ("不動産子会社の株式譲渡に関するお知らせ", "M&A"),
+        ("土地及び建物の譲渡に関するお知らせ", None),
         ("自己株式の取得及び自己株式の公開買付けの予定に関するお知らせ", None),
         ("三沢細谷太陽光事業における匿名組合出資持分の譲渡実行に関するお知らせ", None),
         ("「Bondlido」の米国販売提携並びに上市時期について", None),
@@ -791,53 +828,70 @@ def self_test() -> bool:
         eq(f"いまの核の名詞では拾える: {t[:24]}…", classify(t)[0], "M&A")
 
     print("③ 「最後のページ」の判断（本物の TDnet を読んで確かめる）")
+    # 🟡 日付を固定で書くと、TDnet の保管期間（約40日）を過ぎた日は404になり、
+    #    「開示なし」の経路を通らないまま (0, True) で**中身のないまま通る**（ミハル監査 10/17）。
+    #    → 日付は今日から数える。why の中身まで照らして、どの経路を通ったかを確かめる。
     try:
-        html = get(TDNET_LIST.format(page=1, ymd="20261013"))
+        busy = _recent_multipage_day()
+        eq("直近でページが2枚以上ある平日が見つかる", busy is not None, True)
+        html = get(TDNET_LIST.format(page=1, ymd=busy.strftime("%Y%m%d")))
         soup = BeautifulSoup(html, "html.parser")
         codes = [tr.find_all("td")[1].get_text(strip=True)
                  for tr in soup.find_all("tr") if len(tr.find_all("td")) >= 4]
         all5 = [c for c in codes if re.match(r"^[0-9A-Z]{5}$", c)]
         num5 = [c for c in all5 if re.match(r"^\d{5}$", c)]
-        eq("10/13 の page1 は開示100件ある", len(all5), 100)
+        eq(f"{busy} の page1 は開示100件ある", len(all5), 100)
         eq("うち数字5桁だけ数えると100未満＝旧ルールはここで打ち切っていた", len(num5) < 100, True)
-        _, info = tdnet_day(date(2026, 10, 13), set())
+        _, info = tdnet_day(busy, set())
         eq("いまは2ページ目以降も読む", info["pages"] >= 2, True)
-        eq("10/13 の開示は300件を超える", info["rows"] > 300, True)
-        eq("その日は読めた扱い", info["ok"], True)
+        eq("開示は100件を超える", info["rows"] > 100, True)
+        eq("その日は読めた扱い・理由は空", (info["ok"], info["why"]), (True, ""))
         eq("ページ上限に当たったら ok=False（黙って打ち切らない）",
-           _page_cap_control(), (False, True))
-        print("④ 0件の裏取り（陽性対照）")
-        _, e1 = tdnet_day(date(2026, 10, 11), set())   # 日曜＝開示なし
-        eq("日曜は『開示なし』の文で0件を裏取りできる", (e1["rows"], e1["ok"]), (0, True))
-        eq("その理由が記録に残る", "開示された情報はありません" in e1["why"], True)
-        _, e2 = tdnet_day(date(2030, 1, 7), set())      # 未来＝一覧そのものが無い
-        eq("未来の日付は404＝一覧なしとして記録", (e2["rows"], e2["ok"], "404" in e2["why"]), (0, True, True))
+           _page_cap_control(busy), (False, True))
+
+        print("④ 0件の裏取り（陽性対照・どの経路を通ったかも照らす）")
+        sat = date.today() - timedelta(days=(date.today().weekday() - 5) % 7)  # 直近の土曜
+        _, e1 = tdnet_day(sat, set())
+        eq(f"土曜（{sat}）は0件で読めた扱い", (e1["rows"], e1["ok"]), (0, True))
+        eq("しかも『開示された情報はありません』の経路を通っている（404の経路ではない）",
+           ("開示された情報はありません" in e1["why"], "404" in e1["why"]), (True, False))
+        eq("一覧にはその日付が0埋めで書かれている",
+           sat.strftime("%Y年%m月%d日") in get(TDNET_LIST.format(page=1, ymd=sat.strftime("%Y%m%d"))), True)
+        eq("0埋めしない書き方だと外れる（10/17に8日ぶん🔴を出した型）",
+           date(2026, 9, 19).strftime("%Y年%m月%d日"), "2026年09月19日")
+
+        fut = date.today() + timedelta(days=90)
+        _, e2 = tdnet_day(fut, set())
+        eq("まだ先の日付は『一覧なし』で読めた扱い", (e2["rows"], e2["ok"], "先の日付" in e2["why"]), (0, True, True))
+
+        old = date.today() - timedelta(days=120)
+        while old.weekday() >= 5:
+            old -= timedelta(days=1)
+        _, e3 = tdnet_day(old, set())
+        eq(f"保管期間を過ぎた平日（{old}）は ok=False（0件にしない）", e3["ok"], False)
+        eq("理由が『保管期間』と言う", "保管期間" in e3["why"], True)
+
         print("⑤ 取れなかった日は黙って0件にしない（陽性対照）")
         import unittest.mock as mock
         with mock.patch(__name__ + ".get", side_effect=urllib.error.URLError("名前が引けません")):
-            _, e3 = tdnet_day(date(2026, 10, 13), set())
-        eq("DNSが引けない日は ok=False", e3["ok"], False)
-        eq("理由が入る", "URLError" in e3["why"], True)
+            _, e4 = tdnet_day(busy, set())
+        eq("DNSが引けない日は ok=False", (e4["ok"], "URLError" in e4["why"]), (False, True))
         with mock.patch(__name__ + ".get", side_effect=urllib.error.HTTPError("u", 403, "Forbidden", {}, None)):
-            _, e4 = tdnet_day(date(2026, 10, 13), set())
-        eq("403 は ok=False（404 と混ぜない）", (e4["ok"], "403" in e4["why"]), (False, True))
+            _, e5 = tdnet_day(busy, set())
+        eq("403 は ok=False（404 と混ぜない）", (e5["ok"], "403" in e5["why"]), (False, True))
+        # 2ページ目以降の「200で0件」＝最後のページの次は404のはずなので、終わりと決めない
+        real = get
+        def one_then_empty(url, **kw):
+            return real(url) if "_001_" in url else real(
+                TDNET_LIST.format(page=1, ymd=sat.strftime("%Y%m%d")))
+        with mock.patch(__name__ + ".get", side_effect=one_then_empty):
+            _, e6 = tdnet_day(busy, set())
+        eq("2ページ目が200で0件なら ok=False", (e6["ok"], "200で0件" in e6["why"]), (False, True))
     except Exception as e:
         print(f"  ✗ ③〜⑤ は TDnet に届かないので確かめられません: {type(e).__name__} {str(e)[:70]}")
         ok[1] += 1
 
-    print("⑤b 0件の裏取りは一桁の月日でも効くか（0埋め・陽性対照）")
-    try:
-        _, e5 = tdnet_day(date(2026, 9, 19), set())   # 土曜・月が一桁
-        eq("9月19日（土）も『開示なし』で裏取りできる", (e5["rows"], e5["ok"]), (0, True))
-        _, e6 = tdnet_day(date(2026, 10, 3), set())   # 土曜・日が一桁
-        eq("10月3日（土）も裏取りできる", (e6["rows"], e6["ok"]), (0, True))
-        eq("0埋めしない書き方なら外れる（これが10/17に8日ぶん🔴を出した型）",
-           f"2026年9月19日" in get(TDNET_LIST.format(page=1, ymd="20260919")), False)
-    except Exception as e:
-        print(f"  ✗ ⑤b は TDnet に届かないので確かめられません: {type(e).__name__}")
-        ok[1] += 1
-
-    print("⑤c 通知の文字コード（日本語の見出しがヘッダに載るか）")
+    print("⑤c 通知の文字コード（**符号化できるところまで**。実際に届くかは手で1回確かめた）")
     try:
         "人事ウォッチ 取れなかった日があります".encode("utf-8").decode("latin-1").encode("latin-1")
         eq("日本語の見出しをヘッダに載せられる", True, True)
