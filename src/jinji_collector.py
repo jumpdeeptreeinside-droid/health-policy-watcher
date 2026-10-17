@@ -453,6 +453,9 @@ def tdnet_day(d: date, seen: set):
                 # 0件の裏取り（陽性対照）。日付も照らす＝別の日のページを読んでいないこと。
                 # 🔴 一覧の日付は0埋め（「2026年09月19日」）。埋めずに照らすと一桁の月日で全部外れる
                 if TDNET_EMPTY in html and d.strftime("%Y年%m月%d日") in html:
+                    # 🔑 理由の頭を「開示なし（」にそろえる。失敗の理由にも
+                    #    「開示された情報はありません」が入るので、その語では経路を見分けられない
+                    #    （ミハル監査 10/17）。自己検査はこの頭で照らす。
                     return done(1, 0, True, "開示なし（TDnet がその日付で「開示された情報はありません」）")
                 return done(1, 0, False, "0件だが「開示された情報はありません」がその日付で出ていない")
             break
@@ -646,7 +649,16 @@ def write_section(days=7):
     🔴 「この欄は不完全です」がそのまま会員の1冊に載ってしまうので、載せる前に止める。
        止め方＝`section_blocked.flag` を置き、ntfy で**件数だけ**知らせ、終了コードを1にする。
        セクション自体は作って残す（中を見て、直すか注記を付けて出すかを翔太さんが決める）。
-       欄は土曜 07:05 に作られ、公開は日曜 05:55（実測）なので、知らせてから1日ある。
+
+    🔴 **この通知だけでは守りにならない**（2026-10-17 の監査で私の思い違いが出た）。
+       私は「欄は土曜07:05・公開は日曜05:55なので1日の猶予がある」と書いたが、**誤り**。
+       日曜05:55 の LaunchAgent は用意済みの JSON を commit/push するだけで、1冊は作り直さない。
+       会員の1冊（KV）に欄が入るのは **publish_weekly.py を回した時点**。実測:
+         w20261018 … 欄 10/17(土)07:06 → 1冊 10/17(土)08:27（差 約1時間20分）
+         w20261011 … 欄 10/10(土)07:05 → 1冊 10/10(土)10:38
+       猶予は1時間ほどしかない。**止めるのは publish_weekly 側（1冊を作る時点）**で、
+       `section_blocked.flag` を見る行をそこに入れる必要がある（モリが担当・crosshealthjp）。
+       commit 時刻を公開時刻と読み違えたのが原因＝[[feedback_which_field_did_you_read]]。
     """
     os.makedirs(OUT_DIR, exist_ok=True)
     md = build_weekly_section(days)
@@ -892,8 +904,10 @@ def self_test() -> bool:
         sat = date.today() - timedelta(days=(date.today().weekday() - 5) % 7)  # 直近の土曜
         _, e1 = tdnet_day(sat, set())
         eq(f"土曜（{sat}）は0件で読めた扱い", (e1["rows"], e1["ok"]), (0, True))
-        eq("しかも『開示された情報はありません』の経路を通っている（404の経路ではない）",
-           ("開示された情報はありません" in e1["why"], "404" in e1["why"]), (True, False))
+        # 🔑 「開示された情報はありません」は**失敗の理由にも入る**ので経路を見分けられない
+        #    （ミハル監査 10/17）。成功の経路にしか出ない「開示なし（」で照らす。
+        eq("しかも『開示なし』の経路を通っている（404の経路でも失敗の経路でもない）",
+           (e1["why"].startswith("開示なし（"), "404" in e1["why"]), (True, False))
         eq("一覧にはその日付が0埋めで書かれている",
            sat.strftime("%Y年%m月%d日") in get(TDNET_LIST.format(page=1, ymd=sat.strftime("%Y%m%d"))), True)
         # 🟡 strftime の比較だけでは `f"{d.month}月{d.day}日"` に戻しても緑のままだった
@@ -904,7 +918,7 @@ def self_test() -> bool:
         for pd in pads:
             _, ep = tdnet_day(pd, set())
             eq(f"{pd}（一桁の月日）も『開示なし』の経路で読めた扱い",
-               (ep["rows"], ep["ok"], "開示された情報はありません" in ep["why"]), (0, True, True))
+               (ep["rows"], ep["ok"], ep["why"].startswith("開示なし（")), (0, True, True))
             h = get(TDNET_LIST.format(page=1, ymd=pd.strftime("%Y%m%d")))
             eq(f"{pd} の一覧は0埋めで書いてある", pd.strftime("%Y年%m月%d日") in h, True)
             eq(f"{pd} は0埋めしない書き方では一覧に出てこない（戻したら上の対照が落ちる）",
