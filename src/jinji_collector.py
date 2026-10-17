@@ -1027,15 +1027,17 @@ def self_test() -> bool:
             eq("セクション自体は残す（中を見て決められるように）",
                os.path.exists(os.path.join(tmp, "section_latest.md")), True)
 
-            # --- 作成日の印（モリ 2026-10-18）。照らす形は publish_weekly 側に書く正規表現そのまま。
-            #     こちらの CREATED_MARK では照らさない（同じ式を2回書くと食い違いが見つからない）。
+            # --- 作成日の印（モリ 2026-10-18）。CREATED_MARK では照らさない（同じ式を2回書くと食い違いが見つからない）。
+            #     🔴 向こう（publish_weekly.py）の式と「同じ」ではない（ミハルの指摘 10/18）。向こうは
+            #        `\s*<!--\s*jinji-section-created:\s*(…)\s*-->[ \t]*\n?` ＝空白に寛容な緩い形で、
+            #        下の式はその**厳しい部分集合**。ここが通れば向こうでも当たるが、逆は言えない。
+            #        両側がつながっていることは、本物の欄を向こうの複製に読ませる通しの確かめで見る
+            #        （ミハルが 10/18 に実施：「✓ 人事ウォッチ欄を差し込みました（作成日 2026-10-18）」）。
             MARK_RE = r"^<!-- jinji-section-created: (\d{4}-\d{2}-\d{2}) -->$"
             body_b = open(os.path.join(tmp, "section_latest.md"), encoding="utf-8").read()
             m = re.match(MARK_RE, body_b.split("\n")[0])
             eq("1行目が作成日の印になっている", bool(m), True)
             eq("印の日付は今日", m.group(1) if m else None, date.today().isoformat())
-            eq("止める週の欄にも印は入る（止めの判断より前に読まれる行なので）",
-               bool(re.match(MARK_RE, body_b.split("\n")[0])), True)
             eq("日付入りのファイルにも入る",
                bool(re.match(MARK_RE, open(os.path.join(
                    tmp, "section_" + date.today().strftime("%Y%m%d") + ".md"),
@@ -1056,6 +1058,15 @@ def self_test() -> bool:
             with mock.patch(__name__ + ".load_state", return_value={"tdnet_days": allok}):
                 md_g, okflag_g = write_section()
             eq("全部読めた週は ok=True を返す", okflag_g, True)
+            # 止める週（body_b）だけでなく、**全部読めた週の欄にも**印が入ることを照らす。
+            # 片方しか見ていないと、印を h["complete"] の分岐の中に移しても緑のままになる（ミハル🟡2 10/18）。
+            body_g = open(os.path.join(tmp, "section_latest.md"), encoding="utf-8").read()
+            mg = re.match(MARK_RE, body_g.split("\n")[0])
+            eq("全部読めた週の欄も1行目が作成日の印", bool(mg), True)
+            eq("その日付も今日", mg.group(1) if mg else None, date.today().isoformat())
+            eq("全部読めた週も1行外すと本文の見出しから始まる",
+               "\n".join(body_g.split("\n")[1:]).startswith("## 今週の人事ウォッチ"), True)
+            eq("どちらの週でも印は1回だけ", body_g.count("jinji-section-created"), 1)
             eq("そのとき止めの印は消える", os.path.exists(os.path.join(tmp, "section_blocked.flag")), False)
             eq("知らせは増えない", len(sent), 1)
 
