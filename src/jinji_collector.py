@@ -637,15 +637,41 @@ def build_weekly_section(days=7) -> str:
     return "\n".join(lines)
 
 
+BLOCK_FLAG = os.path.join(OUT_DIR, "section_blocked.flag")
+
+
 def write_section(days=7):
+    """セクションを作る。**窓が不完全なら止める側に倒す**（サクマさん決定 2026-10-17）。
+
+    🔴 「この欄は不完全です」がそのまま会員の1冊に載ってしまうので、載せる前に止める。
+       止め方＝`section_blocked.flag` を置き、ntfy で**件数だけ**知らせ、終了コードを1にする。
+       セクション自体は作って残す（中を見て、直すか注記を付けて出すかを翔太さんが決める）。
+       欄は土曜 07:05 に作られ、公開は日曜 05:55（実測）なので、知らせてから1日ある。
+    """
     os.makedirs(OUT_DIR, exist_ok=True)
     md = build_weekly_section(days)
+    h = window_health(days)
     dated = os.path.join(OUT_DIR, f"section_{date.today().strftime('%Y%m%d')}.md")
     latest = os.path.join(OUT_DIR, "section_latest.md")
-    open(dated, "w", encoding="utf-8").write(md)
-    open(latest, "w", encoding="utf-8").write(md)
+    for p in (dated, latest):
+        # 🔴 先に中身を作ってから置き換える（途中で落ちて0バイトにしない）
+        with open(p + ".tmp", "w", encoding="utf-8") as fh:
+            fh.write(md); fh.flush(); os.fsync(fh.fileno())
+        os.replace(p + ".tmp", p)
     print(f"✓ セクション生成 → {latest}")
-    return md
+    if h["complete"]:
+        if os.path.exists(BLOCK_FLAG):
+            os.remove(BLOCK_FLAG)
+        return md, True
+    why = (f"取れなかった日 {len(h['bad'])}日／収集の記録が無い日 {len(h['unknown'])}日"
+           f"（読めた日 {len(h['read'])}日・開示 {h['rows']}件）")
+    with open(BLOCK_FLAG + ".tmp", "w", encoding="utf-8") as fh:
+        fh.write(f"{date.today().isoformat()} {why}\n"); fh.flush(); os.fsync(fh.fileno())
+    os.replace(BLOCK_FLAG + ".tmp", BLOCK_FLAG)
+    print(f"🔴 人事ウォッチ欄が不完全です＝週次に載せないでください: {why}")
+    print(f"   止めの印: {BLOCK_FLAG}")
+    notify("人事ウォッチ欄 不完全です（週次を止めてください）", why)
+    return md, False
 
 
 def main():
@@ -708,10 +734,12 @@ def main():
                 print("  🔴 TDnetのヒット0件だが、語の層が陽性対照に落ちた＝0件を信じてはいけない")
                 notify("人事ウォッチ 語の層がこわれています", "ヒット0本・陽性対照が落ちました。ログを見てください")
                 rc = 1
-        write_section()
+        if not write_section()[1]:
+            rc = 1
 
     if args.weekly:
-        write_section()
+        if not write_section()[1]:
+            rc = 1
 
     if bad:
         print(f"🔴 TDnetを読めなかった日が {len(bad)}日: "
@@ -732,6 +760,17 @@ def main():
 # 出どころ: TDnet 一覧の実測（2026-09-18〜10-17）。
 CONTROL_MA = "米国IntraBio社の完全子会社化に関するお知らせ"          # 4507 塩野義製薬 10/05 15:00 page2
 CONTROL_NOT_MA = "臨時株主総会招集のための基準日設定に関するお知らせ"  # 7459 メディパルHD 10/13 15:30 page2
+
+
+def _single_digit_weekend_days(back=39):
+    """保管期間の中から、月か日が一桁の土日を返す（0埋めの対照に使う）。
+    毎月1〜9日は必ず直近39日のどこかにあり、その9日のうちに土日が必ず入る。"""
+    out = []
+    for i in range(1, back + 1):
+        d = date.today() - timedelta(days=i)
+        if d.weekday() >= 5 and (d.month < 10 or d.day < 10):
+            out.append(d)
+    return out[:2]
 
 
 def _recent_multipage_day(back=14):
@@ -857,8 +896,19 @@ def self_test() -> bool:
            ("開示された情報はありません" in e1["why"], "404" in e1["why"]), (True, False))
         eq("一覧にはその日付が0埋めで書かれている",
            sat.strftime("%Y年%m月%d日") in get(TDNET_LIST.format(page=1, ymd=sat.strftime("%Y%m%d"))), True)
-        eq("0埋めしない書き方だと外れる（10/17に8日ぶん🔴を出した型）",
-           date(2026, 9, 19).strftime("%Y年%m月%d日"), "2026年09月19日")
+        # 🟡 strftime の比較だけでは `f"{d.month}月{d.day}日"` に戻しても緑のままだった
+        #    （ミハル監査 10/17）。**保管期間の中にある一桁の月日の土日**を tdnet_day に通す。
+        #    毎月1〜9日は必ず直近39日のどこかにあるので、必ず1つは選べる。
+        pads = _single_digit_weekend_days()
+        eq("一桁の月日の土日が保管期間の中に見つかる", len(pads) >= 1, True)
+        for pd in pads:
+            _, ep = tdnet_day(pd, set())
+            eq(f"{pd}（一桁の月日）も『開示なし』の経路で読めた扱い",
+               (ep["rows"], ep["ok"], "開示された情報はありません" in ep["why"]), (0, True, True))
+            h = get(TDNET_LIST.format(page=1, ymd=pd.strftime("%Y%m%d")))
+            eq(f"{pd} の一覧は0埋めで書いてある", pd.strftime("%Y年%m月%d日") in h, True)
+            eq(f"{pd} は0埋めしない書き方では一覧に出てこない（戻したら上の対照が落ちる）",
+               f"{pd.year}年{pd.month}月{pd.day}日" in h, False)
 
         fut = date.today() + timedelta(days=90)
         _, e2 = tdnet_day(fut, set())
@@ -929,6 +979,30 @@ def self_test() -> bool:
         md_miss = build_weekly_section()
     eq("収集の記録が無い日も「不完全」にする",
        ("不完全です" in md_miss, NONE_MA in md_miss, NONE_JINJI in md_miss), (True, False, False))
+
+    print("⑦ 不完全な週は週次を止める（本物の write_section を通す・書き先は仮の場所）")
+    import tempfile
+    sent = []
+    with tempfile.TemporaryDirectory() as tmp:
+        with mock.patch(__name__ + ".OUT_DIR", tmp), \
+             mock.patch(__name__ + ".BLOCK_FLAG", os.path.join(tmp, "section_blocked.flag")), \
+             mock.patch(__name__ + ".notify", side_effect=lambda t, b: sent.append((t, b))), \
+             mock.patch(__name__ + ".load_events", return_value=[]):
+            with mock.patch(__name__ + ".load_state", return_value={"tdnet_days": one_bad}):
+                md_b, okflag_b = write_section()
+            eq("不完全な週は ok=False を返す", okflag_b, False)
+            eq("止めの印が置かれる", os.path.exists(os.path.join(tmp, "section_blocked.flag")), True)
+            eq("知らせが1本出る", len(sent), 1)
+            eq("知らせに件数が入る", "取れなかった日 1日" in sent[0][1], True)
+            eq("知らせに社名・題名は入らない",
+               any(w in sent[0][0] + sent[0][1] for w in ("株式", "お知らせ", "ep", ".json")), False)
+            eq("セクション自体は残す（中を見て決められるように）",
+               os.path.exists(os.path.join(tmp, "section_latest.md")), True)
+            with mock.patch(__name__ + ".load_state", return_value={"tdnet_days": allok}):
+                md_g, okflag_g = write_section()
+            eq("全部読めた週は ok=True を返す", okflag_g, True)
+            eq("そのとき止めの印は消える", os.path.exists(os.path.join(tmp, "section_blocked.flag")), False)
+            eq("知らせは増えない", len(sent), 1)
 
     print(f"\n{'🟢 全部通りました' if ok[1] == 0 else '🔴 落ちた項目があります'}（通 {ok[0]} / 落 {ok[1]}）")
     return ok[1] == 0
