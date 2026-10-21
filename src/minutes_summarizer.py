@@ -34,11 +34,19 @@ from typing import Optional
 import requests
 from bs4 import BeautifulSoup
 
+# 🔴 要約を Notion の行にも置く（2026-10-21・オト）。メールだけだと人が見落として連載が止まる。
+#    GitHub の artifact / repo 置きは **このリポジトリが PUBLIC** なので有料の中身が
+#    外から読める＝採らない。割る判定は notion_md_blocks.py の1本だけ（Mac 側も同じものを使う）。
+import notion_md_blocks as NMB
+
 # ──────────────────────────────────────────────
 # 定数
 # ──────────────────────────────────────────────
 JST        = timezone(timedelta(hours=9))
 OUTPUT_DIR = Path(__file__).parent.parent / "output" / "minutes_summaries"
+
+MINUTES_PROP = "Minutes(控え)"   # 本文は入れない。sha256・ブロック数・区切りだけ
+NOTION_APPEND_MAX = 100          # Notion の append は1回100ブロックまで
 HEADERS  = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -279,6 +287,47 @@ class NotionAPI:
         except Exception:
             pass
         return None
+
+    def put_minutes_md(self, page_id: str, md: str) -> bool:
+        """要約の .md を、この行の本文（段落ブロック）と控えの列に置く。
+
+        🔴 置けたかどうかは **戻して指紋が合うか** で返す（置いたつもりを信じない）。
+        🔴 同じ指紋の控えが既にあれば、二重に足さない（やり直しても増えない）。
+        """
+        try:
+            man = NMB.manifest(md)
+            blocks, _ = NMB.split_blocks(md)
+            if NMB.restore(blocks, man) != NMB.canon(md):
+                logger.warning("  要約を割って戻せませんでした。Notion には置きません")
+                return False
+            # すでに同じものが入っていれば何もしない
+            page = requests.get(f"{self.BASE}/pages/{page_id}",
+                                headers=self.headers, timeout=30)
+            page.raise_for_status()
+            cur = page.json()["properties"].get(MINUTES_PROP, {})
+            cur_txt = "".join(x["plain_text"] for x in cur.get("rich_text", []))
+            if cur_txt.strip():
+                try:
+                    if json.loads(cur_txt).get("sha256") == man["sha256"]:
+                        logger.info("  同じ要約が既に置かれています（足しません）")
+                        return True
+                except Exception:
+                    pass
+            for i in range(0, len(blocks), NOTION_APPEND_MAX):
+                part = blocks[i:i + NOTION_APPEND_MAX]
+                self._patch(f"/blocks/{page_id}/children", {"children": [
+                    {"object": "block", "type": "paragraph",
+                     "paragraph": {"rich_text": [{"type": "text", "text": {"content": b}}]}}
+                    for b in part]})
+            self._patch(f"/pages/{page_id}", {"properties": {MINUTES_PROP: {
+                "rich_text": [{"type": "text",
+                               "text": {"content": json.dumps(man, ensure_ascii=False)}}]}}})
+            logger.info(f"  Notion に要約を置きました（{man['blocks']}ブロック"
+                        f"／指紋 {man['sha256'][:12]}…）")
+            return True
+        except Exception as e:
+            logger.warning(f"  Notion への要約の置き場所づくりに失敗: {e}")
+            return False
 
     def set_status_minutes(self, page_id: str, status_name: str) -> bool:
         """Status(議事録) を更新する"""
@@ -591,6 +640,15 @@ def main() -> None:
         )
 
         reports.append({"title": title, "content": content})
+
+        # ── Notion に要約そのものを置く（Mac が受け取る経路）──
+        #    🔴 置けてから「完了」にする。逆にすると「完了なのに本文が無い」行が残り、
+        #       Mac 側は作れないのに朝の点検は未公開として鳴り続ける。
+        placed = notion.put_minutes_md(page_id, content)
+        if not placed:
+            logger.warning("  要約を Notion に置けなかったので Status(議事録) は変えません"
+                           "（次の回でやり直します）")
+            continue
 
         # ── Notion ステータス更新 ──────────────────────────
         notion.set_status_minutes(page_id, "完了")
