@@ -37,6 +37,38 @@ def api(method, path, body=None):
     return json.load(urllib.request.urlopen(req, timeout=60))
 
 
+JINGLE_SEC = 10.29          # 提供ジングル（字が無い・mac_audio_pipeline が先頭に足す・実測）
+RATE_CHARS_PER_MIN = 329    # ジングルを引いた速さ（本番の回で較正・2026-10-22）
+FIT_A, FIT_B = 0.1525, 54.3  # 秒 = a×話す字数 + b（実測4本・残差±1.2秒）
+
+
+def _op_ed_chars():
+    """OP と ED の字数を **mac_audio_pipeline から取る**（写すとどちらかが変わったとき気づけない）。
+    読めなければ 0 を返さず、最後に実測した字数と「見られなかった」ことを出す。"""
+    import importlib.util
+    f = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mac_audio_pipeline.py")
+    try:
+        spec = importlib.util.spec_from_file_location("map_for_len", f)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return len(m.OP_TEXT), len(m.ED_TEXT)
+    except Exception as e:
+        print(f"  ⚠️ OP/ED の字数を見られませんでした（{type(e).__name__}）。"
+              "2026-10-22 に実測した 29字・74字で計算します")
+        return 29, 74
+
+
+OP_ED = _op_ed_chars()
+
+
+def spoken_minutes(title, body_chars):
+    """話す長さ（分）。(長いほうの見かた, 短いほうの見かた, 話す字数) を返す。"""
+    n = OP_ED[0] + len(title) + body_chars + OP_ED[1]
+    m1 = n / RATE_CHARS_PER_MIN + JINGLE_SEC / 60     # 一定の速さ＋ジングル
+    m2 = (FIT_A * n + FIT_B) / 60                     # 実測4本に当てた直線
+    return max(m1, m2), min(m1, m2), n
+
+
 def md_body(path):
     """frontmatterと見出し記号を落として、段落の配列にする。"""
     t = open(os.path.expanduser(path), encoding="utf-8").read()
@@ -75,12 +107,23 @@ def main() -> int:
         sys.exit(f"NG: 原典で確かめられない言い方があります: {bad}")
     # 🔴 3〜5分が決まり（告知回の決まり③）。ただし「なぜ」を入れる回は6分まで許す
     #    （2026-10-03 翔太さんの指示で大阪の回を5.4分にした）。
-    #    1分あたり約330字で換算。6分=約1,980字。
-    if not 900 <= chars <= 1980:
-        sys.exit(f"NG: 原稿{chars}字。3〜6分（約990〜1,980字）から外れている")
-    if chars > 1700:
-        print(f"  ⚠️ 原稿{chars}字＝約{(chars+103)/330:.1f}分。決まりの3〜5分を超えています"
-              f"（6分までは翔太さんの指示があるときのみ）")
+    #    🔴 2026-10-22 に換算を直した（サクマ決定）。それまでは「(本文+103)/330分」で見ていたが
+    #       ① **題を数えていなかった**（音声は OP → 題 → 本文 → ED の順で読まれる。題は56字になることもある）
+    #       ② 先頭に提供ジングル（字が無い・約10.3秒）が入ることを数えていなかった
+    #       ③ OP/ED は話速100・本文は120 なので、1つの速さで割ると合わない
+    #       実測で較正：試聴 v1〜v3 と本番の4本（話す字数 1,336〜1,450字）で
+    #         ・ジングルを引いた速さ 324〜329字/分
+    #         ・直線で当てると 秒 = 0.1525×話す字数 + 54.3（残差 ±1.2秒）
+    #       2つの見かたを両方出し、**長いほう**で門を見る（短く見積もって見逃さない）。
+    mins_hi, mins_lo, spoken = spoken_minutes(o.title, chars)
+    if not 3.0 <= mins_hi <= 6.0:
+        sys.exit(f"NG: 話す字数{spoken}字＝約{mins_hi:.2f}分。3〜6分から外れている")
+    if mins_hi > 5.0:
+        print(f"  ⚠️ 約{mins_hi:.2f}分（もう一つの見かたで{mins_lo:.2f}分／話す字数{spoken}字"
+              f"＝OP{OP_ED[0]}＋題{len(o.title)}＋本文{chars}＋ED{OP_ED[1]}）。"
+              "決まりの3〜5分を超えています（6分までは翔太さんの指示があるときのみ）")
+    else:
+        print(f"  長さ: 約{mins_hi:.2f}分（もう一つの見かたで{mins_lo:.2f}分／話す字数{spoken}字）")
     if any(x in "".join(paras) for x in ("木内翔太", "木内")):
         sys.exit("NG: 原稿に本人の名乗りがある。自動音声の回に入れない")
     if any(len(p) > MAX_BLOCK for p in paras):
