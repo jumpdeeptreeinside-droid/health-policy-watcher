@@ -28,6 +28,7 @@ from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
+import mailer          # 送り方（465・timeout）は mailer.py だけに置く
 
 # ──────────────────────────────────────────────
 # ログ設定
@@ -699,7 +700,6 @@ def park_failed_page(notion: "NotionAPI", page_id: str, title: str, reason: str)
 # ──────────────────────────────────────────────
 def send_factcheck_notification(processed_articles: list) -> None:
     """ファクトチェック待ち記事の通知メールを送信する"""
-    import smtplib
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
@@ -735,10 +735,7 @@ Status(コンテンツ作成) を「完了」に変更してください。
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_ADDRESS, NOTIFY_TO, msg.as_string())
+        mailer.send(msg, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, NOTIFY_TO)
         logger.info(f"  ファクトチェック通知メール送信完了: {len(NOTIFY_TO)}件")
     except Exception as e:
         logger.error(f"  メール送信失敗: {e}")
@@ -751,7 +748,6 @@ def send_stall_notification(pending: int, failures: list) -> None:
     記事0本の日でも緑になる。9/8〜9/11に国内記事がゼロだったことに
     誰も気づけなかったのはそのため。ここだけは必ず声を上げる。
     """
-    import smtplib
     from email.mime.text import MIMEText
 
     lines = [f"  - {f['title'][:60]} … {f['reason']}"
@@ -775,10 +771,7 @@ def send_stall_notification(pending: int, failures: list) -> None:
     msg["From"] = GMAIL_ADDRESS
     msg["To"] = NOTIFY_TO
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_ADDRESS, NOTIFY_TO, msg.as_string())
+        mailer.send(msg, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, NOTIFY_TO)
         logger.info(f"  空振り通知メール送信完了: {len(NOTIFY_TO)}件")
     except Exception as e:
         logger.error(f"  空振り通知の送信失敗: {e}")

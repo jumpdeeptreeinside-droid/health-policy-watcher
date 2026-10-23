@@ -23,6 +23,7 @@ import requests
 import markdown as markdown_lib
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional
+import mailer          # 送り方（465・timeout）は mailer.py だけに置く
 
 # JST タイムゾーン
 _JST = timezone(timedelta(hours=9))
@@ -99,7 +100,6 @@ FEATURED_IMAGE_URL = "https://tekutekuradio.com/wp-content/uploads/2025/10/名�
 
 def send_wordpress_notification(uploaded_articles: list) -> None:
     """WordPress投稿完了の通知メールを送信する"""
-    import smtplib
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
@@ -130,10 +130,7 @@ WordPressの管理画面で内容を確認してください。
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD_WP)
-            server.sendmail(GMAIL_ADDRESS, NOTIFY_TO_WP, msg.as_string())
+        mailer.send(msg, GMAIL_ADDRESS, GMAIL_APP_PASSWORD_WP, NOTIFY_TO_WP)
         logger.info(f"WordPress完了通知メール送信: 1件")
     except Exception as e:
         logger.error(f"メール送信失敗: {e}")

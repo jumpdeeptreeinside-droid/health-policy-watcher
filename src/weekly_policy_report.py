@@ -23,7 +23,7 @@ import json
 import logging
 import os
 import re
-import smtplib
+import mailer          # 送り方（465・timeout）は mailer.py だけに置く
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -779,10 +779,7 @@ def send_completion_email(
         logger.warning(f"  添付ファイル読み込み失敗（本文のみ送信）: {e}")
 
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as srv:
-            srv.starttls()
-            srv.login(gmail_address, gmail_pass)
-            srv.sendmail(gmail_address, NOTIFY_TO, msg.as_string())
+        mailer.send(msg, gmail_address, gmail_pass, NOTIFY_TO)
         logger.info(f"  完了メール送信: {len(NOTIFY_TO)}件")
     except Exception as e:
         logger.error(f"  メール送信失敗: {e}")

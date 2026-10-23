@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Optional
 
 import requests
+import mailer          # 送り方（465・timeout）は mailer.py だけに置く
 
 # Windows環境での文字エンコーディング問題を解決
 if sys.platform == 'win32':
@@ -71,7 +72,6 @@ if not NOTIFY_TO:
 
 def send_podcast_notification(articles: list) -> None:
     """音声化待ちになった記事の通知メールを送信する"""
-    import smtplib
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
@@ -100,10 +100,7 @@ def send_podcast_notification(articles: list) -> None:
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_ADDRESS, recipients, msg.as_string())
+        mailer.send(msg, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, recipients)
         logger.info(f"音声化待ち通知メール送信完了: {len(NOTIFY_TO)}件")
     except Exception as e:
         logger.error(f"メール送信失敗: {e}")

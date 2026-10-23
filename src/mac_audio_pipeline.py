@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+import mailer          # 送り方（465・timeout）は mailer.py だけに置く
 
 
 def _cfg(name: str, default: str = "") -> str:
@@ -587,8 +588,12 @@ def queue_dictionary_entries(issues: list, title: str = "") -> int:
     return added
 
 
-def send_mail(subject: str, body: str) -> None:
-    """完成/公開の通知メール（config.pyのGMAIL設定があれば送信・無ければスキップ）"""
+def send_mail(subject: str, body: str) -> bool:
+    """完成/公開の通知メール。**送れたら True・送れなければ False**。
+
+    🔴 2026-10-23：ここが例外を飲んで None を返していたので、呼ぶ側が
+       「✉️ 通知メール送信」と無条件に印字していた（ログが送信の証拠にならない）。
+       送り方（465・timeout）は mailer.py の1か所にある。"""
     try:
         import config
         addr = getattr(config, "GMAIL_ADDRESS", "")
@@ -597,20 +602,18 @@ def send_mail(subject: str, body: str) -> None:
         addr = pw = ""
     if not addr or not pw:
         print(f"  （メール未設定のため通知スキップ: {subject}）")
-        return
-    import smtplib
+        return False
     from email.mime.text import MIMEText
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = addr
     msg["To"] = _cfg("NOTIFY_EMAIL")
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as srv:
-            srv.starttls()
-            srv.login(addr, pw)
-            srv.send_message(msg)
+        mailer.send(msg, addr, pw)
+        return True
     except Exception as e:
         print(f"  ⚠ メール送信失敗: {e}")
+        return False
 
 
 def sanitize(name: str) -> str:

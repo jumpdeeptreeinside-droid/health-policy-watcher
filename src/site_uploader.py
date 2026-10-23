@@ -48,6 +48,7 @@ from notion_wordpress_uploader import (  # noqa: E402
     GMAIL_APP_PASSWORD_WP,
     NOTIFY_TO_WP,
 )
+import mailer          # 送り方（465・timeout）は mailer.py だけに置く
 
 SITE_BASE_URL = os.environ.get('SITE_BASE_URL', 'https://www.crosshealthjp.org').rstrip('/')
 SITE_ARTICLES_DIR = os.environ.get('SITE_ARTICLES_DIR', '')
@@ -60,7 +61,6 @@ def _to_text(h: str) -> str:
 
 def send_site_notification(uploaded: list, title_warnings: list = None) -> None:
     """サイト公開完了の通知メール"""
-    import smtplib
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
@@ -84,10 +84,7 @@ def send_site_notification(uploaded: list, title_warnings: list = None) -> None:
     msg["To"] = NOTIFY_TO_WP
     msg.attach(MIMEText(body, "plain", "utf-8"))
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD_WP)
-            server.sendmail(GMAIL_ADDRESS, NOTIFY_TO_WP, msg.as_string())
+        mailer.send(msg, GMAIL_ADDRESS, GMAIL_APP_PASSWORD_WP, NOTIFY_TO_WP)
         logger.info("サイト公開通知メール送信: 1件")
     except Exception as e:
         logger.error(f"メール送信失敗: {e}")

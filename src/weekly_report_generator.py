@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-import smtplib
+import mailer          # 送り方（465・timeout）は mailer.py だけに置く
 import sys
 import time
 from datetime import datetime, timezone
@@ -824,10 +824,7 @@ def send_completion_email(
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_ADDRESS, NOTIFY_TO, msg.as_string())
+        mailer.send(msg, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, NOTIFY_TO)
         logger.info(f"  完了メール送信完了: {len(NOTIFY_TO)}件")
     except Exception as e:
         logger.error(f"  メール送信失敗: {e}")
