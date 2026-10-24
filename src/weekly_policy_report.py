@@ -778,11 +778,19 @@ def send_completion_email(
     except Exception as e:
         logger.warning(f"  添付ファイル読み込み失敗（本文のみ送信）: {e}")
 
+    # 🔴 2026-10-24（サクマ決定・ミハル指摘）：ここは例外を飲んで**終了コード0**だったので、
+    #    メールが落ちた回は「Actions は緑・手元には何も来ない・ランナーは消えて本文も消える」に
+    #    なっていた。レポートを repo に commit する段を外して、本文の届け先が**この添付メール
+    #    1本だけ**になったので、落ちたことを黙って飲まない＝落とす（失敗通知の段が鳴る／
+    #    同じ経路で失敗通知も落ちても、Actions が赤になるので後から見える）。
     try:
         mailer.send(msg, gmail_address, gmail_pass, NOTIFY_TO)
         logger.info(f"  完了メール送信: {len(NOTIFY_TO)}件")
     except Exception as e:
         logger.error(f"  メール送信失敗: {e}")
+        logger.error("  🔴 本文の届け先はこのメールだけです（レポートは repo に残しません）。"
+                     "失敗したので終了コード1で終わります＝GitHub Actions が赤くなります")
+        sys.exit(1)
 
 
 # ──────────────────────────────────────────────

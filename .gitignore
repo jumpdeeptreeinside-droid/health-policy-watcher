@@ -31,9 +31,9 @@ env/
 # Output / Download folders
 # ===========================
 output/*
-# ウィークリーレポートだけは残す（ランナーは消えるので、あとから取りに行けなくなる）
-!output/weekly_reports/
-!output/weekly_reports/**
+# ウィークリーレポートは git に入れない（2026-10-24 サクマ決定）。
+# 公開の repo に全文を置かないため、workflow の commit の段も外した。
+# 本文は完了メールの添付（md）で届く。
 !output/slides/
 downloads/
 
