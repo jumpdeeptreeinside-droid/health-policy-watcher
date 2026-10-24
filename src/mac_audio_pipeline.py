@@ -610,6 +610,10 @@ def send_mail(subject: str, body: str) -> bool:
     msg["To"] = _cfg("NOTIFY_EMAIL")
     try:
         mailer.send(msg, addr, pw)
+        # 🔴 成功の印は**ここ1か所だけ**に置く（2026-10-23）。呼ぶ側に書かせると、
+        #    送れていないのに「送信」と出る（表示と挙動の食い違い）。逆に、成功が1行も
+        #    残らないと「直ったか」をログで言えない＝この回の点検がそれで止まった。
+        print(f"  ✉️ 通知メール送信（{subject}）")
         return True
     except Exception as e:
         print(f"  ⚠ メール送信失敗: {e}")
