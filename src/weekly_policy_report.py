@@ -128,6 +128,16 @@ def _load_config() -> tuple[str, str, str, str, str, str]:
         logger.error(f"必須設定が不足: {', '.join(missing)}")
         sys.exit(1)
 
+    # 🔴 2026-10-24（サクマ決定）：本文の届け先は完了メール1本だけなので、
+    #    送るための設定が無いのは**失敗**。NOTIFY_EMAIL（74行目）と同じ強さで、
+    #    ここで落とす（前は送信のところで警告して戻り、終了コード0のままだった）。
+    _m2 = [k for k, v in {"GMAIL_ADDRESS": gmail_address,
+                          "GMAIL_APP_PASSWORD": gmail_pass}.items() if not v]
+    if _m2:
+        logger.error(f"メールの設定が不足: {', '.join(_m2)}"
+                     "。本文の届け先はこのメールだけなので、送れないまま終わりません")
+        sys.exit(1)
+
     logger.info(f"使用モデル: {gemini_model}")
     return (notion_key, notion_db, gemini_key, gemini_model,
             gmail_address or "", gmail_pass or "")
@@ -737,6 +747,13 @@ def save_report(content: str, today: datetime) -> tuple[Path, Path]:
 # ──────────────────────────────────────────────
 # 完了メール送信
 # ──────────────────────────────────────────────
+def _recipients(to: str) -> list:
+    """宛先の文字列を宛先の一覧にする（カンマ・セミコロン区切り・空白は捨てる）。
+    🔴 len(文字列) を「件数」と書いていたのを直すための1か所。"""
+    import re as _re
+    return [a for a in _re.split(r"[,;\s]+", (to or "").strip()) if a]
+
+
 def send_completion_email(
     report_content: str,
     article_count: int,
@@ -746,8 +763,10 @@ def send_completion_email(
     gmail_pass: str,
 ) -> None:
     if not gmail_address or not gmail_pass:
-        logger.warning("  Gmail 設定未完了のためメール送信スキップ")
-        return
+        # 🔴 ここに来るのは _load_config を通らずに呼ばれたときだけ（本来は上で落ちる）。
+        #    黙って戻らない＝「緑なのに届かない」を作らない。
+        logger.error("  Gmail 設定が無いのでメールを送れません（終了コード1で終わります）")
+        sys.exit(1)
 
     subject = (
         f"【医療政策ウィークリーレポート】{fmt_date_jp(today)}号 生成完了"
@@ -770,13 +789,28 @@ def send_completion_email(
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
     # .md ファイルを添付
+    # 🔴 2026-10-24（サクマ決定）：添付が作れないときに「本文のみ送信」で済ませていたが、
+    #    その本文には生成日時・記事数・保存先しか無く、**レポート本文が1字も入らない**
+    #    （しかも Actions は緑）。届くことをいちばん大事にする＝
+    #    ①添付を付ける → ②付けられなければ本文をメールの本文に流し込む →
+    #    ③それもできなければ終了コード1で落とす。
     try:
         md_bytes = md_path.read_bytes()
         attachment = MIMEApplication(md_bytes, Name=md_path.name)
         attachment["Content-Disposition"] = f'attachment; filename="{md_path.name}"'
         msg.attach(attachment)
     except Exception as e:
-        logger.warning(f"  添付ファイル読み込み失敗（本文のみ送信）: {e}")
+        logger.warning(f"  添付ファイル読み込み失敗: {e}")
+        if report_content and report_content.strip():
+            msg.attach(MIMEText(
+                "※ 添付を付けられなかったので、レポート本文をこのメールに入れます。\n"
+                "（添付の読み込みに失敗: " + str(e) + "）\n\n" + report_content,
+                "plain", "utf-8"))
+            logger.warning(f"  → レポート本文（{len(report_content):,}字）をメール本文に入れました")
+        else:
+            logger.error("  🔴 添付も本文も入れられません（レポート本文が空）。"
+                         "終了コード1で終わります＝GitHub Actions が赤くなります")
+            sys.exit(1)
 
     # 🔴 2026-10-24（サクマ決定・ミハル指摘）：ここは例外を飲んで**終了コード0**だったので、
     #    メールが落ちた回は「Actions は緑・手元には何も来ない・ランナーは消えて本文も消える」に
@@ -785,7 +819,9 @@ def send_completion_email(
     #    同じ経路で失敗通知も落ちても、Actions が赤になるので後から見える）。
     try:
         mailer.send(msg, gmail_address, gmail_pass, NOTIFY_TO)
-        logger.info(f"  完了メール送信: {len(NOTIFY_TO)}件")
+        # 🔴 2026-10-24：NOTIFY_TO は文字列なので len() は**宛先の文字数**だった
+        #    （「送った件数」を名乗る自己申告が実体と違う型）。宛先の数を数える。
+        logger.info(f"  完了メール送信: {len(_recipients(NOTIFY_TO))}件")
     except Exception as e:
         logger.error(f"  メール送信失敗: {e}")
         logger.error("  🔴 本文の届け先はこのメールだけです（レポートは repo に残しません）。"
@@ -840,8 +876,12 @@ def main() -> None:
     logger.info(f"  今回の対象: {len(pages)} 件")
 
     if not pages:
-        logger.info("  対象記事がありません。終了します。")
-        return
+        # 🔴 2026-10-24（サクマ決定）：ここも return で**終了コード0**だった。
+        #    失敗通知の本文が挙げている原因「直近7日間に0件」はまさにこの道で、
+        #    そのとき静かに緑で終わっていた（配信のない週に誰も気づかない）。
+        logger.error("  対象記事がありません（直近7日間に0件）。"
+                     "終了コード1で終わります＝GitHub Actions が赤くなります")
+        sys.exit(1)
 
     # ── 2. 各記事の処理 ────────────────────────────────────
     logger.info("\n[2] 各記事の要約・ファクトチェック・Notion保存...")
@@ -919,8 +959,13 @@ def main() -> None:
         })
 
     if not articles_data:
-        logger.error("  処理可能な記事がありませんでした。終了します。")
-        return
+        # 🔴 2026-10-24（サクマ決定）：ここは return で**終了コード0**だったので、
+        #    完了メールも失敗通知も出ない静かな緑だった。失敗通知の本文は
+        #    「直近7日間に0件」を失敗の原因として挙げているのに、動きが合っていなかった。
+        #    配信のない週は気づくべきこと＝落とす。
+        logger.error("  処理可能な記事がありませんでした。"
+                     "終了コード1で終わります＝GitHub Actions が赤くなります")
+        sys.exit(1)
 
     # ── 並び替え: 国内記事を先に、国際記事を後に ──────────────
     # sort は安定ソートのため、各グループ内では取得時の日付順が保たれる。
