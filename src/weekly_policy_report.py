@@ -72,7 +72,7 @@ WEEKDAY_JP = ["月", "火", "水", "木", "金", "土", "日"]
 # 🔴 PUBLIC repo なので宛先はコードに書かない（2026-10-03 翔太さん判断）。
 #    Actions の Secret / 環境変数 NOTIFY_EMAIL から渡す。未設定なら送らずに理由を出す。
 NOTIFY_TO = os.environ.get("NOTIFY_EMAIL", "")
-if not NOTIFY_TO:
+if not NOTIFY_TO.strip():          # 🔴 空白だけの指定も入口で止める（ミハル 2026-10-24）
     raise SystemExit("NOTIFY_EMAIL が未設定です。宛先が無いので送信しません。")
 
 # ──────────────────────────────────────────────
@@ -98,7 +98,10 @@ def _load_config() -> tuple[str, str, str, str, str, str]:
     gmail_address = os.environ.get("GMAIL_ADDRESS")
     gmail_pass    = os.environ.get("GMAIL_APP_PASSWORD")
 
-    if not (notion_key and notion_db and gemini_key):
+    # 🔴 ミハル 2026-10-24：config.py を読む分岐が「Notion/Gemini が揃っていないとき」の中に
+    #    しか無く、その3つを環境変数で持っていると config.py の Gmail を**一度も読まない**まま
+    #    下の判定で落ちていた（手元で走らせると落ちる）。Gmail も条件に入れる。
+    if not (notion_key and notion_db and gemini_key and gmail_address and gmail_pass):
         try:
             sys.path.insert(0, str(Path(__file__).parent))
             import config as cfg
@@ -635,8 +638,12 @@ def filter_new_articles(notion, pages: list) -> tuple[list, list, list]:
 
     やり直したいときは WEEKLY_INCLUDE_REPORTED=1 で既報も含める。
     """
-    if os.environ.get("WEEKLY_INCLUDE_REPORTED") == "1":
-        logger.info("  WEEKLY_INCLUDE_REPORTED=1: 既報の記事も含めます")
+    # 🔴 2026-10-24：workflow_dispatch の入力（true/false）からも渡せるように、
+    #    "1" だけでなく "true" も受ける（Actions 画面からのやり直しのため）。
+    if os.environ.get("WEEKLY_INCLUDE_REPORTED", "").strip().lower() in ("1", "true"):
+        # 🔴 表示と挙動を合わせる：受けた値をそのまま出す（"=1" と決め打ちしていた）
+        logger.info(f"  WEEKLY_INCLUDE_REPORTED="
+                    f"{os.environ.get('WEEKLY_INCLUDE_REPORTED', '').strip()}: 既報の記事も含めます")
         fresh, already = list(pages), []
     else:
         fresh, already = [], []
@@ -772,6 +779,33 @@ def send_completion_email(
         f"【医療政策ウィークリーレポート】{fmt_date_jp(today)}号 生成完了"
         f"（{article_count}本）"
     )
+    # 🔴 2026-10-24（サクマ決定）：添付が作れないときに「本文のみ送信」で済ませていたが、
+    #    その本文には生成日時・記事数・保存先しか無く、**レポート本文が1字も入らない**
+    #    （しかも Actions は緑）。届くことをいちばん大事にする＝
+    #    ①添付を付ける → ②付けられなければ本文をメールの本文に流し込む →
+    #    ③それもできなければ終了コード1で落とす。
+    # 🔴 ミハル 2026-10-24：添付を**先に読む**。あとから読んでいたので、流し込みの回も
+    #    1つめの本文が「添付の .md ファイルをご確認ください」と書いたままで、
+    #    **添付が無いのに添付を見ろと言う紙**になっていた（text/plain も2つ並んでいた）。
+    #    先に読んで、案内文を実態に合わせ、本文は**1つだけ**にする。
+    # 🔴 ミハル 2026-10-24：`read_bytes()` は**0バイトでも例外を出さない**ので、空の添付が
+    #    緑で届いた。小さすぎる添付は失敗扱いにして、既にある流し込みの道に落とす。
+    MIN_MD = 200        # バイト。これより小さい .md は「中身が無い」とみなす
+    md_bytes, attach_err = None, None
+    try:
+        md_bytes = md_path.read_bytes()
+        if len(md_bytes) < MIN_MD:
+            raise OSError(f"添付が小さすぎます（{len(md_bytes)}バイト／{MIN_MD}バイト未満）")
+    except Exception as e:
+        md_bytes, attach_err = None, e
+        logger.warning(f"  添付を付けられません: {e}")
+
+    has_report = bool(report_content and report_content.strip())
+    if md_bytes is None and not has_report:
+        logger.error("  🔴 添付も本文も入れられません（レポート本文が空）。"
+                     "終了コード1で終わります＝GitHub Actions が赤くなります")
+        sys.exit(1)
+
     body = f"""\
 医療政策ウィークリーレポートが自動生成されました。
 
@@ -780,37 +814,24 @@ def send_completion_email(
 ■ 保存先: {md_path}
 ■ Notion: 各記事の Article(WeeklySummary) プロパティにリンクを設定済み
 
-レポート本文は添付の .md ファイルをご確認ください。
 """
+    if md_bytes is not None:
+        body += "レポート本文は添付の .md ファイルをご確認ください。\n"
+    else:
+        body += (f"※ 添付を付けられなかったので（{attach_err}）、"
+                 "レポート本文をこのメールの下に入れます。\n"
+                 "────────────────────────────\n\n" + report_content + "\n")
+        logger.warning(f"  → レポート本文（{len(report_content):,}字）をメール本文に入れました")
+
     msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"]    = gmail_address
     msg["To"]      = NOTIFY_TO
-    msg.attach(MIMEText(body, "plain", "utf-8"))
-
-    # .md ファイルを添付
-    # 🔴 2026-10-24（サクマ決定）：添付が作れないときに「本文のみ送信」で済ませていたが、
-    #    その本文には生成日時・記事数・保存先しか無く、**レポート本文が1字も入らない**
-    #    （しかも Actions は緑）。届くことをいちばん大事にする＝
-    #    ①添付を付ける → ②付けられなければ本文をメールの本文に流し込む →
-    #    ③それもできなければ終了コード1で落とす。
-    try:
-        md_bytes = md_path.read_bytes()
+    msg.attach(MIMEText(body, "plain", "utf-8"))      # 🔴 text/plain は必ず1つだけ
+    if md_bytes is not None:
         attachment = MIMEApplication(md_bytes, Name=md_path.name)
         attachment["Content-Disposition"] = f'attachment; filename="{md_path.name}"'
         msg.attach(attachment)
-    except Exception as e:
-        logger.warning(f"  添付ファイル読み込み失敗: {e}")
-        if report_content and report_content.strip():
-            msg.attach(MIMEText(
-                "※ 添付を付けられなかったので、レポート本文をこのメールに入れます。\n"
-                "（添付の読み込みに失敗: " + str(e) + "）\n\n" + report_content,
-                "plain", "utf-8"))
-            logger.warning(f"  → レポート本文（{len(report_content):,}字）をメール本文に入れました")
-        else:
-            logger.error("  🔴 添付も本文も入れられません（レポート本文が空）。"
-                         "終了コード1で終わります＝GitHub Actions が赤くなります")
-            sys.exit(1)
 
     # 🔴 2026-10-24（サクマ決定・ミハル指摘）：ここは例外を飲んで**終了コード0**だったので、
     #    メールが落ちた回は「Actions は緑・手元には何も来ない・ランナーは消えて本文も消える」に
@@ -818,7 +839,10 @@ def send_completion_email(
     #    1本だけ**になったので、落ちたことを黙って飲まない＝落とす（失敗通知の段が鳴る／
     #    同じ経路で失敗通知も落ちても、Actions が赤になるので後から見える）。
     try:
-        mailer.send(msg, gmail_address, gmail_pass, NOTIFY_TO)
+        # 🔴 ミハル 2026-10-24：ここに**文字列**を渡していた。smtplib.sendmail は文字列を
+        #    丸ごと1宛先にするので、宛先を2つ書くとログは「2件」と名乗って RCPT は1回
+        #    （しかも不正な宛先）になる＝数え方だけ直して、送り方が追いついていなかった。
+        mailer.send(msg, gmail_address, gmail_pass, _recipients(NOTIFY_TO))
         # 🔴 2026-10-24：NOTIFY_TO は文字列なので len() は**宛先の文字数**だった
         #    （「送った件数」を名乗る自己申告が実体と違う型）。宛先の数を数える。
         logger.info(f"  完了メール送信: {len(_recipients(NOTIFY_TO))}件")

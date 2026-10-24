@@ -12,6 +12,14 @@ on:
         description: '記事取得の日数（デフォルト7日）'
         required: false
         default: '7'
+      # 🔴 2026-10-24（サクマ決定）：記事0件とメール失敗で終了コード1にしたので、
+      #    「Notion に既報の印が付いたあとにメールで落ちた」回をやり直せる口を作る。
+      #    既報も含めて作り直す＝この入力を true にして回す（定時の回では使われない）。
+      include_reported:
+        description: '既報の記事も含めてやり直す（既報の印が付いたあとに失敗した回の作り直し）'
+        type: boolean
+        required: false
+        default: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -51,6 +59,8 @@ jobs:
           GMAIL_ADDRESS:      ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           WEEKLY_REPORT_DAYS: ${{ github.event.inputs.lookup_days || '7' }}
+          # 定時（schedule）では inputs が空＝既報は含めない。手で回すときだけ true にできる
+          WEEKLY_INCLUDE_REPORTED: ${{ github.event.inputs.include_reported }}
         run: |
           python src/weekly_policy_report.py
 
