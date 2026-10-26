@@ -82,6 +82,9 @@ READING_FIXES = []
 READING_SHEET_ID = "1adDCmMJ3bgFZHAOJjGzkNuRDPlZDqLtvD-APsZjl9ic"
 READING_SHEET_CSV = f"https://docs.google.com/spreadsheets/d/{READING_SHEET_ID}/export?format=csv"
 _OVERRIDES_CACHE = os.path.expanduser("~/health-policy-watcher/output/reading_overrides.json")
+# 単純置換に使えず弾いた指摘の台帳（＝コード側の宿題が溜まる場所・2026-10-26）
+_REJECTED_LEDGER = os.path.expanduser("~/health-policy-watcher/output/reading_rejected.json")
+_REJECTED_NOTE = os.path.expanduser("~/health-policy-watcher/output/reading_rejected.md")
 _READING_OVERRIDES = {}  # {誤読語: 正しい読み(かな)} 生成開始時に load_reading_overrides() で満たす
 
 
@@ -116,6 +119,56 @@ def vet_overrides(pairs: dict):
     return safe, rejected
 
 
+def record_rejected(rejected: list, readings: dict):
+    """弾いた指摘をファイルに残す（2026-10-26）。
+
+    🔴 ここが print だけだったのが「胎」が直らなかった根っこ。vet_overrides が1文字語を
+       弾くのは正しい判定だが（無条件に置き換えると胎児→「たい児」）、弾いたあと誰の
+       宿題にもならず、毎時のログに同じ行が出続けるだけだった。やり直しても読みの規則が
+       1つも増えないので、音声は前の版と1バイト差なしになる。
+       ＝弾いた指摘は台帳に積み、「扱い」の欄が空のものだけを.mdの先頭に出す。
+    扱い欄は人（または次に触るセッション）が書く。ここは**上書きしない**。
+    """
+    today = f"{datetime.now():%Y-%m-%d}"
+    try:
+        led = json.load(open(_REJECTED_LEDGER, encoding="utf-8"))
+    except Exception:
+        led = {}
+    for w, why in rejected:
+        e = led.setdefault(w, {"初出": today, "出た回数": 0, "扱い": ""})
+        e["読み(シート)"] = readings.get(w, "")
+        e["理由"] = why
+        e["最終"] = today
+        e["出た回数"] = int(e.get("出た回数", 0)) + 1
+        # 「コード側で対応済み」はもう宿題ではない＝扱いを自動で埋める
+        if "対応済み" in why and not e.get("扱い"):
+            e["扱い"] = "コード側(yomi_preprocess)で対応済み"
+    # 🔴 「🟡」で始まる扱いは**まだ終わっていない**＝未定として数える。
+    #    実測しても判定できなかったもの（人＝にん/じんはwhisperで区別できない）を
+    #    「扱いが書いてあるから済み」にすると、翔太さんの耳が要る件が埋もれる。
+    def _open(e):
+        a = (e.get("扱い") or "").strip()
+        return (not a) or a.startswith("🟡")
+    todo = {w: e for w, e in led.items() if _open(e)}
+    # 🔴 open(...,"w") を先に開かない（落ちると0バイトで残る）。組み立ててから置き換える。
+    body = [f"# 読みの指摘のうち、単純置換に使えず弾いたもの（{today} 更新）", "",
+            f"まだ終わっていないもの: **{len(todo)}件**"
+            + (f"（{'・'.join(todo)}）" if todo else "") + f" / 台帳ぜんぶ {len(led)}件", "",
+            "| 語 | シートの読み | 弾いた理由 | 初出 | 最終 | 出た回数 | 扱い |",
+            "|---|---|---|---|---|---|---|"]
+    for w, e in sorted(led.items(), key=lambda kv: (not _open(kv[1]), kv[1].get("初出", ""))):
+        body.append("| {} | {} | {} | {} | {} | {} | {} |".format(
+            w, e.get("読み(シート)", ""), e.get("理由", ""), e.get("初出", ""),
+            e.get("最終", ""), e.get("出た回数", ""), e.get("扱い", "")))
+    for path, text in ((_REJECTED_LEDGER, json.dumps(led, ensure_ascii=False, indent=1)),
+                       (_REJECTED_NOTE, "\n".join(body) + "\n")):
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    return len(todo)
+
+
 def load_reading_overrides() -> dict:
     """緑さんのシートから 語→読み を取得。失敗時はキャッシュ→空でフェイルセーフ（生成は止めない）。"""
     import csv, io
@@ -136,6 +189,7 @@ def load_reading_overrides() -> dict:
             if "（例）" in date or "例）" in date:  # 見本行はスキップ
                 continue
             pairs[word] = reading
+        raw_pairs = dict(pairs)
         pairs, rejected = vet_overrides(pairs)
         json.dump(pairs, open(_OVERRIDES_CACHE, "w"), ensure_ascii=False, indent=1)
         print(f"  📖 読み間違いメモ: {len(pairs)}語を反映（緑さんシート）")
@@ -143,6 +197,12 @@ def load_reading_overrides() -> dict:
             print(f"  ⚠ 単純置換に使えない指摘{len(rejected)}件＝コード側(yomi_preprocess)で対応する語:")
             for w, why in rejected:
                 print(f"      {w}: {why}")
+            # 🔴 ログに流すだけにしない（それで「胎」が2か月残った）。台帳に積む。
+            try:
+                todo = record_rejected(rejected, raw_pairs)
+                print(f"  🗒 弾いた指摘の台帳: 扱い未定{todo}件 → {_REJECTED_NOTE}")
+            except Exception as e:
+                print(f"  ⚠ 弾いた指摘の台帳を書けませんでした（生成は続けます）: {e}")
     except Exception as e:
         try:
             pairs = json.load(open(_OVERRIDES_CACHE))
