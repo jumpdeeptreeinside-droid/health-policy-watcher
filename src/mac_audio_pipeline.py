@@ -134,12 +134,19 @@ def record_rejected(rejected: list, readings: dict):
         led = json.load(open(_REJECTED_LEDGER, encoding="utf-8"))
     except Exception:
         led = {}
+    # 古い列名（出た回数）で書かれた行を移し替える。これをしないと、列名を変えた回から
+    # 表の数が空欄になる＝台帳が静かに読めなくなる（2026-10-26）。
+    for e in led.values():
+        if "出た回数" in e:
+            e.setdefault("弾いた実行の回数", e.pop("出た回数"))
     for w, why in rejected:
-        e = led.setdefault(w, {"初出": today, "出た回数": 0, "扱い": ""})
+        e = led.setdefault(w, {"初出": today, "弾いた実行の回数": 0, "扱い": ""})
         e["読み(シート)"] = readings.get(w, "")
         e["理由"] = why
         e["最終"] = today
-        e["出た回数"] = int(e.get("出た回数", 0)) + 1
+        # 🔴 1語につき1回ではなく「この語を弾いた実行が何回あったか」＝毎時の実行ごとに増える
+        #    （サクマ指摘 2026-10-26）。列の名前を実態に合わせる。
+        e["弾いた実行の回数"] = int(e.get("弾いた実行の回数", 0)) + 1
         # 「コード側で対応済み」はもう宿題ではない＝扱いを自動で埋める
         if "対応済み" in why and not e.get("扱い"):
             e["扱い"] = "コード側(yomi_preprocess)で対応済み"
@@ -154,12 +161,12 @@ def record_rejected(rejected: list, readings: dict):
     body = [f"# 読みの指摘のうち、単純置換に使えず弾いたもの（{today} 更新）", "",
             f"まだ終わっていないもの: **{len(todo)}件**"
             + (f"（{'・'.join(todo)}）" if todo else "") + f" / 台帳ぜんぶ {len(led)}件", "",
-            "| 語 | シートの読み | 弾いた理由 | 初出 | 最終 | 出た回数 | 扱い |",
+            "| 語 | シートの読み | 弾いた理由 | 初出 | 最終 | 弾いた実行の回数 | 扱い |",
             "|---|---|---|---|---|---|---|"]
     for w, e in sorted(led.items(), key=lambda kv: (not _open(kv[1]), kv[1].get("初出", ""))):
         body.append("| {} | {} | {} | {} | {} | {} | {} |".format(
             w, e.get("読み(シート)", ""), e.get("理由", ""), e.get("初出", ""),
-            e.get("最終", ""), e.get("出た回数", ""), e.get("扱い", "")))
+            e.get("最終", ""), e.get("弾いた実行の回数", ""), e.get("扱い", "")))
     for path, text in ((_REJECTED_LEDGER, json.dumps(led, ensure_ascii=False, indent=1)),
                        (_REJECTED_NOTE, "\n".join(body) + "\n")):
         tmp = path + ".tmp"
@@ -200,7 +207,7 @@ def load_reading_overrides() -> dict:
             # 🔴 ログに流すだけにしない（それで「胎」が2か月残った）。台帳に積む。
             try:
                 todo = record_rejected(rejected, raw_pairs)
-                print(f"  🗒 弾いた指摘の台帳: 扱い未定{todo}件 → {_REJECTED_NOTE}")
+                print(f"  🗒 弾いた指摘の台帳: まだ終わっていない{todo}件 → {_REJECTED_NOTE}")
             except Exception as e:
                 print(f"  ⚠ 弾いた指摘の台帳を書けませんでした（生成は続けます）: {e}")
     except Exception as e:
