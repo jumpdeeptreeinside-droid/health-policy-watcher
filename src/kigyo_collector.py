@@ -43,6 +43,10 @@ WAIT = 1.0
 SEC2CODE = {k + "0": k for k in WATCHLIST_FULL}
 DOCTYPES = {"120": "有価証券報告書", "130": "訂正有価証券報告書",
             "140": "四半期報告書", "160": "半期報告書"}
+# 🔴 パースの中身を変えたら必ず上げる。上げないと「パース済み」でとばされ、
+#    新しく拾うようにした項目が古い行に入らない（employees_filer を足した時に踏んだ）。
+#    zipは手元にあるのでEDINETは叩き直さない。
+PARSE_VERSION = 2
 
 
 def api_get(path: str, params: dict, binary=False):
@@ -251,51 +255,142 @@ def parse_xbrl(path: str) -> dict:
     v, _, _ = _pick(xml, METRIC_TAGS["shares_issued"], ins_con)
     if v is not None:
         out["shares_issued"] = int(v)
+    # 🔴 平均給与・年齢・勤続は「提出会社」の値で、連結の従業員とは別の母集団。
+    #    持株会社だと提出会社＝本社だけ（連結5,478人のうち10人、で平均年収1,109万円の社がある）。
+    #    数字と一緒に人数を出さないと、読む人は会社全体の平均だと受け取る（翔太さん決定 2026-10-27）。
+    #    純粋持株会社で「提出会社の状況」を記載省略している社は、この要素が無い＝Noneのまま。
+    v, _, _ = _pick(xml, METRIC_TAGS["employees"], [r"CurrentYearInstant_NonConsolidatedMember"])
+    if v is not None:
+        out["employees_filer"] = int(v)
     return out
 
 
+def _kinki(desc: str):
+    """書類の題から期を取り出す（「第161期(2025/04/01－2026/03/31)」）。
+
+    訂正有報(130)は periodEnd が空で返ってくるので、有報と訂正有報を結び付ける鍵は題の中の期。
+    """
+    m = re.search(r"第\d+期\([\d/]+－[\d/]+\)", desc or "")
+    return m.group(0) if m else None
+
+
+def _download(doc_id: str, name: str):
+    """XBRLのzipを（無ければ）落として置き場所を返す。落ちたら None。"""
+    zpath = os.path.join(XBRL_DIR, f"{doc_id}.zip")
+    if os.path.exists(zpath):
+        return zpath
+    try:
+        raw = api_get(f"documents/{doc_id}", {"type": 1}, binary=True)
+        # 🔴 open(...,"w") を先に開くと落ちた時に0バイトのzipが残り、次から「ある」と判断される
+        tmp = zpath + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(raw)
+        os.replace(tmp, zpath)
+        time.sleep(WAIT)
+        return zpath
+    except Exception as e:
+        print(f"  ✗ {name}: DL失敗 {type(e).__name__}: {str(e)[:70]}")
+        return None
+
+
 def fetch_and_parse():
-    """各社の最新有報（無ければ最新半期/四半期）をダウンロード→パース→companies.json"""
+    """各社の最新有報（無ければ最新半期/四半期）をダウンロード→パース→companies.json
+
+    同じ期の有報より後に出た訂正有価証券報告書(130)があれば、その値を上に重ねる
+    （翔太さん決定 2026-10-27）。2026-10-27 の実測では、対象5件のうち
+      ・第一三共 税引前利益 263,432→292,391百万円（本文にも訂正後の表がある）
+      ・小野薬品工業 平均年齢 43.7→44.6（本文に「訂正前」「訂正後」で並んでいる）
+    の2件で数字が変わり、残り3件は1項目も変わらなかった。
+    🔴 全部を訂正有報で置き換えてはいけない。訂正有報は直した部分だけの書類なので、
+       載っていない項目は有報の値を残す（＝重ねる・消さない）。
+    """
     os.makedirs(XBRL_DIR, exist_ok=True)
     filings = load_filings()
     comp = json.load(open(COMPANIES, encoding="utf-8")) if os.path.exists(COMPANIES) else {}
     for code, (name, cat) in WATCHLIST_FULL.items():
-        mine = sorted([f for f in filings if f["code"] == code],
-                      key=lambda f: (f["docType"] != "120", f["date"]), reverse=False)
+        mine = sorted([f for f in filings if f["code"] == code], key=lambda f: f["date"])
         yuho = [f for f in mine if f["docType"] == "120"]
-        target = (yuho or mine) and sorted(yuho or mine, key=lambda f: f["date"])[-1]
+        target = (yuho or [f for f in mine if f["docType"] != "130"] or mine)
+        target = target and target[-1]
         if not target:
             print(f"  - {name}: 書類なし（インデックス期間に有報未提出）")
             continue
+        ki = _kinki(target["desc"])
+        tei = [f for f in mine if f["docType"] == "130" and ki
+               and _kinki(f["desc"]) == ki and f["date"] > target["date"]]
+        tei = tei[-1] if tei else None
         cur = comp.get(code, {})
-        if cur.get("docID") == target["docID"] and cur.get("metrics"):
-            continue  # パース済み
-        zpath = os.path.join(XBRL_DIR, f"{target['docID']}.zip")
-        if not os.path.exists(zpath):
-            try:
-                raw = api_get(f"documents/{target['docID']}", {"type": 1}, binary=True)
-                open(zpath, "wb").write(raw)
-                time.sleep(WAIT)
-            except Exception as e:
-                print(f"  ✗ {name}: DL失敗 {e}")
-                continue
+        if (cur.get("docID") == target["docID"] and cur.get("metrics")
+                and cur.get("parsed_v") == PARSE_VERSION
+                and (cur.get("corrected") or {}).get("docID") == (tei or {}).get("docID")):
+            continue  # パース済み（訂正有報の有無もパースの版も同じ）
+        zpath = _download(target["docID"], name)
+        if not zpath:
+            continue
         try:
             metrics = parse_xbrl(zpath)
         except Exception as e:
-            print(f"  ✗ {name}: XBRLパース失敗 {e}")
+            print(f"  ✗ {name}: XBRLパース失敗 {type(e).__name__}: {str(e)[:70]}")
             continue
+        fixed = []
+        if tei:
+            zt = _download(tei["docID"], name + "（訂正有報）")
+            if zt:
+                try:
+                    tm = parse_xbrl(zt)
+                except Exception as e:
+                    print(f"  ✗ {name}: 訂正有報のパース失敗 {type(e).__name__}: {str(e)[:70]}")
+                    tm = {}
+                for k, v in tm.items():       # 載っている項目だけ上に重ねる
+                    if metrics.get(k) != v:
+                        fixed.append(k)
+                    metrics[k] = v
         comp[code] = {"name": name, "category": cat, "docID": target["docID"],
                       "docDate": target["date"], "docDesc": target["desc"],
                       "periodEnd": target.get("periodEnd", ""), "metrics": metrics,
+                      "parsed_v": PARSE_VERSION,
                       "updated": datetime.now().isoformat(timespec="seconds")}
+        if tei:
+            comp[code]["corrected"] = {"docID": tei["docID"], "date": tei["date"]}
         got = ", ".join(k for k in ("revenue", "employees", "avg_salary") if k in metrics)
-        print(f"  ✓ {name}: {target['desc'][:36]} → {got or '（数値抽出なし）'}")
+        note = (f"／訂正有報{tei['date']}で{'・'.join(fixed) if fixed else '変わった数字なし'}"
+                if tei else "")
+        print(f"  ✓ {name}: {target['desc'][:36]} → {got or '（数値抽出なし）'}{note}")
     json.dump(comp, open(COMPANIES, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"✓ companies.json: {len(comp)}社")
 
 
 SITE_REPO = os.path.expanduser("~/crosshealthjp")
 SITE_JSON = os.path.join(SITE_REPO, "src/data/kigyo_companies.json")
+
+
+# 次の期の有報の提出期限（期末の3か月後）＋1か月の余裕。これを過ぎても新しい有報が無ければ
+# 「これが最新の有報」と出す。日数で持つのは、うるう年と月末（2/28・5/20 など）で
+# 月の足し算が崩れないようにするため。365＋92＋30＝487日。
+NEXT_YUHO_DAYS = 487
+
+
+def no_newer_yuho(period_end: str, today=None) -> bool:
+    """次の期の有報が出ているはずの時期を過ぎても、手元が古い期のままか。
+
+    🔴 ここで分かるのは「新しい有報が出ていない」ことだけ。
+       上場廃止・統合などの理由はEDINETの索引からは読めないので、ページにも書かない
+       （サクマ 2026-10-27）。
+    """
+    if not period_end:
+        return False
+    try:
+        pe = date.fromisoformat(period_end)
+    except ValueError:
+        return False
+    return (today or date.today()) > pe + timedelta(days=NEXT_YUHO_DAYS)
+
+
+def missed_days() -> int:
+    """取り直しても取れていない日の数（ページで「確認できていない日がN日」と出すため）。"""
+    pending, _ = _load_pending()
+    yday = (date.today() - timedelta(days=1)).isoformat()
+    return len([d for d in pending if d < yday])
 
 
 def export_site():
@@ -308,6 +403,8 @@ def export_site():
         out.append({
             "code": code, "name": d["name"], "category": d["category"],
             "periodEnd": d.get("periodEnd", ""),
+            # 次の有報が出ているはずなのに出ていない社（ページで「これが最新の有報」と出す）
+            "latest_yuho": no_newer_yuho(d.get("periodEnd", "")),
             "revenue_oku": round(m["revenue"] / 1e8) if m.get("revenue") else None,
             "growth_pct": round((m["revenue"] / m["revenue_prior"] - 1) * 100, 1)
                           if m.get("revenue") and m.get("revenue_prior") else None,
@@ -316,9 +413,12 @@ def export_site():
             "employees": m.get("employees"),
             "salary_man": round(m["avg_salary"] / 1e4) if m.get("avg_salary") else None,
             "age": m.get("avg_age"), "tenure": m.get("avg_tenure"),
+            # 平均年収・年齢・勤続の母集団（提出会社。持株会社だと本社だけ）
+            "employees_filer": m.get("employees_filer"),
         })
     out.sort(key=lambda x: -(x["revenue_oku"] or 0))
-    rec = {"meta": {"updated": max(d["updated"] for d in comp.values())[:10], "count": len(out)},
+    rec = {"meta": {"updated": max(d["updated"] for d in comp.values())[:10], "count": len(out),
+                    "missed_days": missed_days()},
            "companies": out}
     new = json.dumps(rec, ensure_ascii=False, indent=1)
     if os.path.exists(SITE_JSON) and open(SITE_JSON, encoding="utf-8").read() == new:
@@ -346,9 +446,13 @@ def main():
     if args.index:
         sweep_index(args.index)
     if args.daily:
-        if sweep_index(2):
-            fetch_and_parse()
-            export_site()
+        # 🔴 以前は「その回に新しい書類が見つかったら」だけ fetch/export を回していた。
+        #    前の回にダウンロードやパースが落ちた社は、新着が出るまで取り直されなかった
+        #    （翔太さん決定 2026-10-27 で直した）。fetch_and_parse はパース済みの社を
+        #    とばすので、やることが無い日はEDINETを1回も叩かない。
+        sweep_index(2)
+        fetch_and_parse()
+        export_site()
     if args.fetch:
         fetch_and_parse()
     if args.export_site:
