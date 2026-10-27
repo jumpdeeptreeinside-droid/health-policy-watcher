@@ -28,12 +28,15 @@ from datetime import date, datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
-from jinji_collector import WATCHLIST_FULL  # noqa: E402
+from jinji_collector import WATCHLIST_FULL, notify  # noqa: E402
 
 DATA = os.path.expanduser("~/kigyo_data")
 FILINGS = os.path.join(DATA, "filings.jsonl")
 XBRL_DIR = os.path.join(DATA, "xbrl")
 COMPANIES = os.path.join(DATA, "companies.json")
+# 取り直しが要る日の控え（失敗した日＋当日ぶん）。swept_dates.json の形は変えない
+# ＝名前を変えると既存の532日ぶんが静かに読めなくなるので、足す形にする。
+PENDING = os.path.join(DATA, "pending_dates.json")
 API = "https://api.edinet-fsa.go.jp/api/v2"
 WAIT = 1.0
 # EDINETのsecCodeは5桁（4桁コード+0）
@@ -56,24 +59,70 @@ def load_filings() -> list:
     return [json.loads(l) for l in open(FILINGS, encoding="utf-8") if l.strip()]
 
 
+def _save_json(path, obj):
+    """🔴 open(path,"w") を先に開くと、落ちた時に0バイトが残る。tmpに書いて置き換える。"""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _load_pending() -> tuple:
+    """取り直し待ちの日と、最後に通知した日数を返す。壊れていたら空から始める。"""
+    try:
+        j = json.load(open(PENDING, encoding="utf-8"))
+    except Exception:
+        return set(), -1
+    if isinstance(j, list):          # 古い形（念のため）
+        return set(j), -1
+    return set(j.get("pending") or []), int(j.get("notified", -1))
+
+
 def sweep_index(days: int):
-    """過去days日の提出書類一覧からウォッチ企業の報告書を拾う（済みの日はスキップ）"""
+    """過去days日＋取り直し待ちの日の提出書類一覧からウォッチ企業の報告書を拾う。
+
+    🔴「済みの日はスキップ・直近2日だけ再チェック」だけだと、取りこぼしが永久に残る
+       （2026-10-27にEDINETを取り直して実測で判明）。実際に起きた形：
+         2026-08-19 07:20 の走査では、その日の日中に出た有報がまだEDINETに載っていない
+           → それでもその日を「済み」に入れる
+         2026-08-20 の再チェック（i=1）が DNS エラーで落ちる → どこにも残らない
+         2026-08-21 には 08-19 が直近2日の窓から外れ、「済み」なので二度と見ない
+       ＝ドラッグストア1社の有報が2か月以上入らず、ページは1年前の期のままだった。
+       2026-10-14 は 403 が3日続いて同じ形で落ちた（2社の半期報告書）。社名は filings.jsonl 側。
+    対策は2つ：
+      ① 失敗した日を pending_dates.json に残し、窓に関係なく毎回取り直す（直近2日に頼らない）
+      ② 当日ぶんは「まだ増える」ので、走査できても pending に残し、翌日もう一度見るまで外さない
+    """
     os.makedirs(DATA, exist_ok=True)
     state_f = os.path.join(DATA, "swept_dates.json")
     swept = set(json.load(open(state_f))) if os.path.exists(state_f) else set()
+    pending, notified = _load_pending()
     have = {f["docID"] for f in load_filings()}
     found = 0
-    for i in range(days, -1, -1):
-        d = (date.today() - timedelta(days=i)).isoformat()
-        if d in swept and i > 1:  # 直近2日は再チェック（当日追加分）
-            continue
-        try:
-            r = api_get("documents.json", {"date": d, "type": 2})
-        except Exception as e:
-            print(f"  ✗ {d}: {e}")
+    today = date.today().isoformat()
+    yday = (date.today() - timedelta(days=1)).isoformat()
+    window = [(date.today() - timedelta(days=i)).isoformat() for i in range(days, -1, -1)]
+    # 窓の外の取り直し待ち（古い順）＋ 窓の中で見る必要がある日
+    targets = sorted(d for d in pending if d not in window)
+    targets += [d for d in window if d not in swept or d in pending or d >= yday]
+    for n, d in enumerate(targets):
+        r, why = None, "応答がありません"
+        for attempt in range(3):
+            try:
+                r = api_get("documents.json", {"date": d, "type": 2})
+                break
+            except Exception as e:
+                why = f"{type(e).__name__}: {str(e)[:70]}"
+                if attempt < 2:
+                    time.sleep(WAIT * 5 * (attempt + 1))   # 403はまとまって出るので少し待つ
+        if r is None:
+            # 🔴 ここで黙って continue していたのが根っこ。済みの日だと誰も気づかない。
+            pending.add(d)
+            _save_json(PENDING, {"pending": sorted(pending), "notified": notified})
+            print(f"  ✗ {d}: {why}（取り直し待ちに入れました）")
             time.sleep(WAIT)
             continue
-        for doc in r.get("results", []):
+        for doc in r.get("results") or []:
             sec = doc.get("secCode") or ""
             if sec not in SEC2CODE or doc.get("docTypeCode") not in DOCTYPES:
                 continue
@@ -90,12 +139,28 @@ def sweep_index(days: int):
             found += 1
             print(f"  + {d} {rec['company']} {DOCTYPES[rec['docType']]} {rec['desc'][:40]}")
         swept.add(d)
-        if i % 50 == 0:
-            json.dump(sorted(swept), open(state_f, "w"))
+        if d >= today:
+            pending.add(d)      # 当日ぶんは翌日もう一度見る
+        else:
+            pending.discard(d)
+        _save_json(state_f, sorted(swept))
+        _save_json(PENDING, {"pending": sorted(pending), "notified": notified})
+        if len(targets) > 20 and n % 50 == 0:
             print(f"  …{d} まで走査（新規{found}件）")
         time.sleep(WAIT)
-    json.dump(sorted(swept), open(state_f, "w"))
-    print(f"✓ index: 新規{found}件（累計{len(have)}件）")
+    # 当日ぶんはまだ増える。前日ぶんは次の回で取り直せる＝1日ぶんの猶予を置き、
+    # 一度こけただけで毎回通知が出て本物の取りこぼしが薄まるのを防ぐ。
+    stale = sorted(d for d in pending if d < yday)
+    if stale:
+        print(f"  🔴 取れなかった日 {len(stale)}（{stale[0]} 〜 {stale[-1]}・次の回でまた取り直します）")
+        if len(stale) != notified:
+            notify("企業データ", f"取れなかった日 {len(stale)}")   # ntfyは公開話題＝数だけ
+            notified = len(stale)
+    elif notified > 0:
+        notify("企業データ", "取れなかった日 0")
+        notified = 0
+    _save_json(PENDING, {"pending": sorted(pending), "notified": notified})
+    print(f"✓ index: 新規{found}件（累計{len(have)}件・取れなかった日{len(stale)}）")
     return found
 
 
