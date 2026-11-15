@@ -407,6 +407,153 @@ def build_episode(title: str, body_text: str, out_mp3: str) -> bool:
 
 SITE_REPO = os.path.expanduser("~/crosshealthjp")
 
+# ───────── push の守り（2026-11-15・サクマ依頼／翔太さん OK。陽性対照 test_push_guard_chj.sh）─────────
+# 🔴 なぜ素の `git push` をやめるか：SITE_REPO は**共有の作業ツリー**で、ほかの窓も
+#    ほかの自動ジョブも同じ main を触る。素の push は**枝ごと**出すので、誰かの未push commit が
+#    1本あれば一緒に外に出る＝人の耳を通っていないものが本番に出る道になる。
+# 🔴 ID を名指しするだけでは塞がらない：commit を push すると**その祖先も一緒に出る**。
+#    だから「上流から出す commit まで」の区間に自分以外が無いことを**先に数える**。
+#    分からないとき（区間が取れないとき）は押さない。
+# 同じ型：~/bin/chuikyo_publish.py（push_cmd / no_bare_push）・~/sakuma/run_board_cache.sh（others_unpushed）
+MY_PATHS = ("public/podcast/",)
+MY_SUBJECT = "podcast: "
+# 🔴 ジョブだけが付ける目印（ミハル監査🟡② 2026-11-15）。
+#    件名の頭とパスだけでは「人が `podcast: …` の件名で public/podcast/ だけを手で直した
+#    未push commit」を自分のものと見てしまう。commit の本文にこの行を入れ、判定にも入れる。
+#    🔴 入れる日の注意：この目印が無い**古い形の未push commit**は「他人」と判定される。
+#       入れる前に共有ツリーの未pushが0件であることを確かめる（残っていたら先に出す）。
+MY_TRAILER = "Auto-Job: audio-pipeline"
+
+
+def push_cmd(remote: str, sha: str) -> list:
+    """🔴 ID を名指しして押す。HEAD は（載せ直し・ほかの処理で）動きうる。"""
+    return ["git", "push", remote, sha + ":refs/heads/main"]
+
+
+def no_bare_push(src: str) -> list:
+    """自分の中に素の git push が残っていないか（守りの自己検査）。"""
+    bad = []
+    for i, line in enumerate(src.splitlines(), 1):
+        s = line.strip()
+        # コメント行と、この検査そのものを呼ぶ行は対象外
+        if s.startswith("#") or "no_bare_push(" in s:
+            continue
+        # 🔴 1行に両方書く＝この行自身が ":refs/heads/" を含むので自分を検出しない
+        #    （~/bin/chuikyo_publish.py と同じ書き方）
+        if '"push"' in s and ":refs/heads/" not in s:
+            bad.append(f"{i}行目: {s[:70]}")
+    return bad
+
+
+# 🔴 同じ理由で3回続けて見送ったら知らせを1段上げる（サクマ 2026-11-15）。
+#    毎時メールを3回とも同じ重さで出すと、止まっていることが埋もれる。
+#    置き場は logs/（*.log は .gitignore 済み＝公開 repo に出さないため拡張子は .log）。
+HOLD_STATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "..", "logs", "podcast_hold_streak.log")
+
+
+def _ntfy(text: str) -> bool:
+    """件数だけの短い知らせ。話題名は**鍵**なので repo に書かず ~/sakuma/.env から読む。
+    設定が無ければ何もしない（False）。🔴 外に出す文に件名・ID・作者を入れない。"""
+    topic = os.environ.get("NTFY_TOPIC", "")
+    if not topic:
+        try:
+            for line in open(os.path.expanduser("~/sakuma/.env"), encoding="utf-8"):
+                if line.startswith("NTFY_TOPIC="):
+                    topic = line.split("=", 1)[1].strip()
+                    break
+        except OSError:
+            return False
+    if not topic:
+        return False
+    try:
+        import urllib.request
+        req = urllib.request.Request(f"https://ntfy.sh/{topic}",
+                                     data=text.encode("utf-8"), method="POST")
+        urllib.request.urlopen(req, timeout=15).read()   # 🔴 timeout は必ず付ける
+        return True
+    except Exception:
+        return False
+
+
+def hold_streak(reason_key: str) -> int:
+    """同じ理由で何回続けて見送ったかを返す（1から）。理由が変わったら1に戻す。
+    🔴 控えるのは理由の**種類**だけ（件名・ID・作者は書かない）。"""
+    prev_key, prev_n = "", 0
+    try:
+        a, b = open(HOLD_STATE, encoding="utf-8").read().split("\n")[:2]
+        prev_key, prev_n = a.strip(), int(b.strip() or 0)
+    except Exception:
+        pass
+    n = prev_n + 1 if prev_key == reason_key else 1
+    try:
+        os.makedirs(os.path.dirname(HOLD_STATE), exist_ok=True)
+        open(HOLD_STATE, "w", encoding="utf-8").write(f"{reason_key}\n{n}\n")
+    except OSError:
+        pass
+    return n
+
+
+def hold_clear() -> None:
+    """出せたら連続回数を消す。"""
+    try:
+        os.remove(HOLD_STATE)
+    except OSError:
+        pass
+
+
+def tell_hold(reason_key: str, n_others: int) -> None:
+    """見送りを知らせる。1回目＝メール／3回ごと＝さらに1段上げる。
+    🔴 外に出す文は**件数だけ**。どの commit かは手元のログにだけ。"""
+    streak = hold_streak(reason_key)
+    body = ("~/crosshealthjp に自分以外の未push commit があるため、"
+            "pull も公開もしていません。\n"
+            "持ち主が push するか取り下げるまで待ちます（次の毎時でやり直します）。\n"
+            "どの commit かは logs/audio_pipeline.log に出ています。")
+    if reason_key == "unknown":
+        body = ("~/crosshealthjp の未pushの一覧が取れないので公開していません。\n"
+                "次の毎時でやり直します。詳しくは logs/audio_pipeline.log を見てください。")
+    print(f"  （同じ理由で {streak}回目の見送り）")
+    if streak == 1:
+        send_mail(f"【公開を見送り】Podcast（他の未push {n_others}本）", body)
+    elif streak % 3 == 0:
+        send_mail(f"【止まっています】Podcast（{streak}回続けて見送り・他の未push {n_others}本）",
+                  body + f"\n\n同じ理由で {streak}回続けて見送っています。")
+        _ntfy(f"Podcast が {streak}回続けて止まっています（他の未push {n_others}本）")
+
+
+def _git_site(args: list, timeout: int = 180):
+    return subprocess.run(["git"] + args, cwd=SITE_REPO, capture_output=True,
+                          text=True, encoding="utf-8", errors="replace", timeout=timeout)
+
+
+def foreign_unpushed(tip: str = "HEAD", upstream: str = "@{u}"):
+    """upstream..tip のうち**この job が作ったのではない** commit を「短いid 件名」で返す。
+    取れなければ None＝「分からない」。分からないときは押さない。
+    自分のものの判定は件名と**触ったファイル**の両方（件名だけだと真似た形が通る）。"""
+    r = _git_site(["rev-list", f"{upstream}..{tip}"])
+    if r.returncode != 0:
+        return None
+    others = []
+    for sha in [s for s in r.stdout.split() if s]:
+        a = _git_site(["log", "-1", "--format=%h%x1f%s%x1f%B", sha])
+        # 🔴 core.quotepath を切る：日本語のファイル名が "\344\273\226…" と8進に化けると
+        #    「public/podcast/ の下か」の判定が外れる（自分の回を他人扱いしてしまう）
+        b = _git_site(["-c", "core.quotepath=false", "show", "--name-only", "--format=", sha])
+        if a.returncode != 0 or b.returncode != 0:
+            return None
+        parts = a.stdout.split("\x1f")
+        if len(parts) < 3:
+            return None
+        short, subj, body = parts[0].strip(), parts[1], parts[2]
+        files = [f for f in b.stdout.split("\n") if f.strip()]
+        mine = (subj.startswith(MY_SUBJECT) and files
+                and all(f.startswith(MY_PATHS) for f in files)
+                and MY_TRAILER in [l.strip() for l in body.split("\n")])
+        if not mine:
+            others.append(f"{short} {subj[:60]}")
+    return others
+
 
 def publish_episode(mp3_path: str, title: str, description: str = "") -> str:
     """完成mp3を公式サイトのPodcastフィードに公開する（Spotify手動アップの置き換え）。
@@ -415,6 +562,23 @@ def publish_episode(mp3_path: str, title: str, description: str = "") -> str:
     import shutil
     from email.utils import format_datetime
     from datetime import timezone
+
+    # 🔴 pull の前に門（2026-11-15）。自分以外の未push commit が1本でもあれば、
+    #    pull も書き込みも commit もしない。pull --rebase は他人の commit を載せ直して
+    #    id を変える（中身が同じでも持ち主の手元とずれる）＝ ~/sakuma/run_board_cache.sh と同じ決まり。
+    #    Status(Podcast)は「公開待ち」のまま＝次の毎時でやり直すので、黙って落ちはしない。
+    others = foreign_unpushed()
+    if others is None:
+        print("  ✗ 共有ツリーの未pushの一覧が取れないので公開しません")
+        tell_hold("unknown", 0)
+        return ""
+    if others:
+        print(f"  ✗ 自分以外の未push commit が {len(others)}本あるので公開しません:")
+        for o in others:
+            print(f"      {o}")
+        # 🔴 知らせるのは**件数だけ**（件名に人の名前や店名が入りうる）。件名は手元のログにだけ。
+        tell_hold("foreign", len(others))
+        return ""
 
     # 先にrepoを最新化（ファイルを変更した後にpullすると詰まるため・2026-07-07修正）
     r = subprocess.run(["git", "pull", "--rebase", "--autostash", "--quiet"],
@@ -475,19 +639,58 @@ def publish_episode(mp3_path: str, title: str, description: str = "") -> str:
                               text=True, encoding="utf-8", errors="replace", timeout=180)
 
     for args in (["add", "public/podcast"],
-                 ["commit", "-q", "-m", f"podcast: {title[:50]}"]):
+                 # 🔴 2つ目の -m がジョブの目印（本文に入る・件名は変わらない）
+                 ["commit", "-q", "-m", f"podcast: {title[:50]}", "-m", MY_TRAILER]):
         r = _git(args)
         if r.returncode != 0:
             print(f"  ✗ git {args[0]} 失敗: {(r.stderr or r.stdout)[-200:]}")
             return ""
     pushed, why = False, ""
     for attempt in range(1, 4):
-        r = _git(["push", "-q"])
+        # 🔴 押す直前にもう一度見る：門を見たあと押すまでの間に、ほかの窓が commit しうる。
+        rp = _git(["rev-parse", "HEAD"])
+        if rp.returncode != 0:
+            why = (rp.stderr or rp.stdout or "")[-200:]
+            print(f"  ✗ HEAD が読めません: {why}")
+            break
+        sha = rp.stdout.strip()
+        others = foreign_unpushed(tip=sha)
+        if others is None:
+            why = "未pushの一覧が取れない（分からないので押さない）"
+            print(f"  ✗ {why}")
+            break
+        if others:
+            why = f"自分以外の未push commit が{len(others)}本あるので押さない"
+            print(f"  ✗ {why}:")
+            for o in others:
+                print(f"      {o}")
+            break
+        r = subprocess.run(push_cmd("origin", sha), cwd=SITE_REPO, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=180)
         if r.returncode == 0:
-            pushed = True
+            # 🔴 push が通ったと言われただけで完了にしない（届いて初めて完了）。
+            _git(["fetch", "-q", "origin", "main"])
+            chk = _git(["merge-base", "--is-ancestor", sha, "origin/main"])
+            if chk.returncode == 0:
+                pushed = True
+                break
+            why = f"push は通ったが origin/main に {sha[:9]} が入っていない"
+            print(f"  ✗ {why}")
             break
         why = (r.stderr or r.stdout or "")[-200:]
         print(f"  ⚠️ push {attempt}回目が失敗（他の自動化と競合した可能性）: {why}")
+        # 🔴 押し直すための pull の前にも門（ミハル監査🔴 2026-11-15）。
+        #    門を見てから push が落ちるまでの間に、ほかの窓が commit していることがある。
+        #    そのまま pull --rebase すると**他人の commit を載せ直して id を変える**。
+        #    外に出なくても持ち主の手元とずれるので、pull せずに止める。
+        again = foreign_unpushed()
+        if again is None or again:
+            why = ("押し直すための pull をしません（自分以外の未push "
+                   + (f"{len(again)}本" if again else "の一覧が取れない") + "）")
+            print(f"  ✗ {why}:")
+            for o in (again or []):
+                print(f"      {o}")
+            break
         pr = _git(["pull", "--rebase", "--autostash", "--quiet"])
         if pr.returncode != 0:
             why = (pr.stderr or pr.stdout or "")[-200:]
@@ -505,6 +708,7 @@ def publish_episode(mp3_path: str, title: str, description: str = "") -> str:
                   "続く場合は ~/crosshealthjp で git status / git log を確認してください。\n\n"
                   f"最後のエラー:\n{why}")
         return ""
+    hold_clear()
     print(f"  ✅ Podcast公開: {url}（数分でフィード反映→各プラットフォームが自動取得）")
     return url
 
@@ -875,7 +1079,61 @@ def process_notion(dry_run: bool = False, publish: bool = True) -> int:
     return done
 
 
+def self_test() -> int:
+    """守りの決まりを検査する（通信しない・共有ツリーも触らない）。2026-11-15"""
+    ok = fail = 0
+
+    def t(cond, name):
+        nonlocal ok, fail
+        if cond:
+            ok += 1
+            print(f"  ✓ {name}")
+        else:
+            fail += 1
+            print(f"  ✗ {name}")
+
+    t(push_cmd("origin", "deadbeef") == ["git", "push", "origin", "deadbeef:refs/heads/main"],
+      "push は ID を名指しする形")
+    t("-q" not in push_cmd("origin", "x") and "--force" not in push_cmd("origin", "x"),
+      "push に -q も --force も混ぜない")
+    me = open(os.path.abspath(__file__), encoding="utf-8").read()
+    bad = no_bare_push(me)
+    t(not bad, "自分の中に素の git push が無い" + (f"（{bad}）" if bad else ""))
+    # 🔴 陽性対照：素の push を1行混ぜると、上の検査が落ちること
+    t(len(no_bare_push('    r = _git(["push", "-q"])')) == 1,
+      "陽性対照：素の push 1行を検出できる")
+    t(no_bare_push('    subprocess.run(push_cmd("origin", sha))') == [],
+      "陰性対照：ID 名指しの行は検出しない")
+    t(no_bare_push('    # r = _git(["push", "-q"])  # 昔の形') == [],
+      "陰性対照：コメント行は検出しない")
+    # 門の判定（git を呼ばずに形だけ見る）
+    t(MY_SUBJECT == "podcast: " and MY_PATHS == ("public/podcast/",)
+      and MY_TRAILER == "Auto-Job: audio-pipeline",
+      "自分のものの目印は件名・パス・trailer の3つ")
+    me_src = me
+    t('"-m", MY_TRAILER' in me_src, "commit に trailer を付けている")
+    t('"\\n".join(others)' not in me_src, "知らせる文に他人の件名を並べていない")
+    t(me_src.count("foreign_unpushed(") >= 4,
+      "門は pull の前・押す直前・押し直しの前に置いてある")
+    # 見送りの連続回数（state は使い捨ての場所で試す）
+    import tempfile as _tf
+    global HOLD_STATE
+    _keep = HOLD_STATE
+    HOLD_STATE = os.path.join(_tf.mkdtemp(), "s.log")
+    t([hold_streak("foreign") for _ in range(3)] == [1, 2, 3], "同じ理由は数が増える")
+    t(hold_streak("unknown") == 1, "理由が変わったら1に戻る")
+    hold_clear()
+    t(hold_streak("unknown") == 1, "出せたら数は消える")
+    HOLD_STATE = _keep
+    t(HOLD_STATE.endswith(".log"), "連続回数の控えは *.log（公開 repo に出さない）")
+    print(f"\nself-test: {ok}件合格 / {fail}件不合格")
+    return 0 if fail == 0 else 1
+
+
 def main():
+    if "--self-test" in sys.argv:
+        sys.exit(self_test())
+
     # 多重起動ガード：毎時実行と長時間合成の重なりで同じ記事を二重処理しない（2026-07-07）
     _lock = open("/tmp/crosshealth_audio_pipeline.lock", "w")
     try:
