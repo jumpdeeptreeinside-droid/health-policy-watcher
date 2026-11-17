@@ -49,7 +49,8 @@ TDNET_LIST = "https://www.release.tdnet.info/inbs/I_list_{page:03d}_{ymd}.html"
 TDNET_BASE = "https://www.release.tdnet.info/inbs/"
 
 # ウォッチリスト（証券コード4桁→(表示名, カテゴリ)・2026-07-07 木内さん決定）。足すだけで増える。
-# 構成: 調剤専業5＋ドラッグストア12＋医薬品卸5＋内資製薬10＋CRO関連（上場社）＝35社。
+# 構成: 調剤専業5＋ドラッグストア12＋医薬品卸5＋内資製薬10＋CRO関連（上場社）2＝34社。
+# （2025-05 アイロムグループ(2372)が上場廃止でニュースルーム側へ移り35→34。数は WATCHLIST_FULL の件数が正本）
 # 「調剤大手10社」はドラッグ側の調剤併設大手（ウエルシア/ツルハ/スギ/マツキヨ/クリエイトSD）込みでカバー。
 # TDnetは上場企業のみ＝非上場はここでは拾えない: 調剤（クラフト/総合メディカル/I&H等）、
 # 外資製薬日本法人（ファイザー/MSD等）、CRO大手（IQVIA/シミック=2023MBO/EPS/パレクセル等）
@@ -238,7 +239,8 @@ NEWSROOMS = {
     # 非上場調剤大手
     "kraft": ("クラフト（さくら薬局）", "調剤(非上場)", "https://www.kraft-net.co.jp/news/"),
     "sogo": ("総合メディカル", "調剤(非上場)", "https://www.sogo-medical.co.jp/ja/news.html"),
-    "ih": ("I&H（阪神調剤）", "調剤(非上場)", "https://i-h-inc.co.jp/news/ir.html"),
+    # I&H（阪神調剤）は外した：2025-03 スギ薬局に吸収合併・スギHD(7649)は TDnet 側でカバー。
+    #   サイト i-h-inc.co.jp は 2026-10 末から DNS が 127.0.0.1 を返し、10/27〜毎回取れていなかった（翔太さん 11/17 決定）。
     "aisei": ("アイセイ薬局", "調剤(非上場)", "https://www.aisei.co.jp/news/"),
 }
 
@@ -543,7 +545,9 @@ def scan_newsrooms(st: dict) -> list:
             body = get(url)
         except Exception as e:
             print(f"  ✗ newsroom {name}: {type(e).__name__} {str(e)[:60]}")
+            mark_newsroom(st, key, False)
             continue
+        mark_newsroom(st, key, True)
         items = {}
         if "<rdf:RDF" in body[:500] or "<rss" in body[:500]:
             # RSS（PR TIMES等）: <item>のtitle/linkを拾う
@@ -579,7 +583,68 @@ def scan_newsrooms(st: dict) -> list:
     return evs
 
 
+# 🔴 取り先が黙って死ぬ（10/27〜 1社のサイトが閉じられ、3週間だれも気づかなかった）。
+#    取れなかった日を取り先ごとに数え、STREAK_DAYS 日続いたら ntfy に1行だけ知らせる。
+#    ntfy は話題名＝鍵の公開サービスなので、社名は書かず「何社」だけ（notify と同じ線）。
+#    知らせは1日に1回まで（同じ日に何度走っても2回目は鳴らさない）。
+STREAK_DAYS = 3
+
+
+def mark_newsroom(st: dict, key: str, ok: bool, today: str = None):
+    """取り先ごとに「取れなくなった最初の日」を残す。取れたら消す。"""
+    today = today or date.today().isoformat()
+    fm = st.setdefault("newsroom_fail", {})
+    if ok:
+        fm.pop(key, None)
+    else:
+        fm.setdefault(key, today)
+
+
+def newsroom_streak(st: dict, today: str = None) -> int:
+    """STREAK_DAYS 日以上続けて取れていない取り先の数（初日も1日に数える）。"""
+    t = date.fromisoformat(today or date.today().isoformat())
+    return sum(1 for d in st.get("newsroom_fail", {}).values()
+               if (t - date.fromisoformat(d)).days + 1 >= STREAK_DAYS)
+
+
+def ntfy_curl(text: str) -> bool:
+    """curl -f --max-time で送る（固まらない・4xx/5xx を失敗として返す）。話題が無ければ送らない。"""
+    env = os.path.expanduser("~/sakuma/.env")
+    topic = ""
+    if os.path.exists(env):
+        for line in open(env, encoding="utf-8", errors="ignore"):
+            if line.startswith("NTFY_TOPIC="):
+                topic = line.split("=", 1)[1].strip()
+                break
+    if not topic:
+        return False
+    r = subprocess.run(["curl", "-fsS", "--max-time", "20", "-H", "Content-Type: text/plain; charset=utf-8",
+                        "--data-binary", "@-", f"https://ntfy.sh/{topic}"],
+                       input=text.encode("utf-8"), capture_output=True, timeout=40)
+    return r.returncode == 0
+
+
+def alert_newsroom(st: dict, today: str = None, send=None) -> bool:
+    """続けて取れない取り先があれば、1日1回だけ知らせる。鳴らしたら True。"""
+    today = today or date.today().isoformat()
+    n = newsroom_streak(st, today)
+    if not n or st.get("newsroom_alert_day") == today:
+        return False
+    st["newsroom_alert_day"] = today   # 送れなくても同じ日は2回目を試さない（1日1回まで）
+    text = f"ニュースルーム{n}社が{STREAK_DAYS}日続けて取れない"
+    print(f"  🔴 {text}")
+    if not (send or ntfy_curl)(text):
+        print("  ✗ 通知できませんでした")
+    return True
+
+
 # ---------- ウィークリー用セクション ----------
+
+def n_watch() -> int:
+    """見張っている社数＝TDnet の上場社＋ニュースルームの非上場・外資（直書きしない・2026-11-17）。
+    サイト側の正本は crosshealthjp の src/data/watch_counts.ts（同じ数になる）。"""
+    return len(WATCHLIST_FULL) + len(NEWSROOMS)
+
 
 def window_health(days=7) -> dict:
     """直近 days 日のうち、TDnet をちゃんと読めた日・読めなかった日・記録の無い日を数える。
@@ -666,7 +731,7 @@ def build_weekly_section(days=7) -> str:
             t = f"[{e['title']}]({e['url']})" if e.get("url") else e["title"]
             lines.append(f"- {md}　**{e['company']}**（{e.get('category','')}）　{t}")
     elif health["complete"]:
-        lines.append("今週、ウォッチ対象企業（調剤・ドラッグストア・医薬品卸・製薬・CRO 52社）のM&A・再編関連の開示・発表はありませんでした。")
+        lines.append(f"今週、ウォッチ対象企業（調剤・ドラッグストア・医薬品卸・製薬・CRO {n_watch()}社）のM&A・再編関連の開示・発表はありませんでした。")
     else:
         lines.append(incomplete_note(health))
     lines += ["", "（出典：厚生労働省 幹部名簿／TDnet適時開示／各社ニュースルーム。毎日自動収集）", ""]
@@ -781,6 +846,7 @@ def main():
         save_state(st)
         evs += run_days([date.today() - timedelta(days=i) for i in (1, 0)])  # 昨日＋当日（dedupあり）
         evs += scan_newsrooms(st)
+        alert_newsroom(st)
         save_state(st)
         append_events(evs)
         print(f"✓ daily: 新規イベント{len(evs)}件")
@@ -1222,6 +1288,45 @@ def self_test() -> bool:
             eq("どちらの週でも印は1回だけ", body_g.count("jinji-section-created"), 1)
             eq("そのとき止めの印は消える", os.path.exists(os.path.join(tmp, "section_blocked.flag")), False)
             eq("知らせは増えない", len(sent), 1)
+
+    print("⑧ ニュースルームが続けて取れないときの知らせ（わざと落として、1回鳴り2回目は鳴らない）")
+    import unittest.mock as mock
+    sent2 = []
+    stt = {}
+    for d in ("2026-11-01", "2026-11-02"):
+        mark_newsroom(stt, "x", False, d); mark_newsroom(stt, "y", True, d)
+        eq(f"{d}：2日目までは鳴らない", alert_newsroom(stt, d, send=lambda t: sent2.append(t) or True), False)
+    mark_newsroom(stt, "x", False, "2026-11-03")
+    eq("3日目に初めて鳴る", alert_newsroom(stt, "2026-11-03", send=lambda t: sent2.append(t) or True), True)
+    eq("同じ日の2回目は鳴らない", alert_newsroom(stt, "2026-11-03", send=lambda t: sent2.append(t) or True), False)
+    eq("知らせはちょうど1本", len(sent2), 1)
+    eq("文は数だけ（社名・取り先の鍵を書かない）", sent2[0] if sent2 else None, "ニュースルーム1社が3日続けて取れない")
+    eq("翌日も続いていれば翌日は鳴る（1日1回）", alert_newsroom(stt, "2026-11-04", send=lambda t: sent2.append(t) or True), True)
+    mark_newsroom(stt, "x", True, "2026-11-05")
+    eq("取れたら数えなおし（鳴らない）", alert_newsroom(stt, "2026-11-05", send=lambda t: sent2.append(t) or True), False)
+    # 本物の通り道で：scan_newsrooms が失敗を数えているか（取り先を1件にして get を落とす）
+    stt2 = {}
+    with mock.patch.dict(NEWSROOMS, {"zz": ("試し", "試し", "https://example.invalid/")}, clear=True), \
+         mock.patch(__name__ + ".get", side_effect=OSError("わざと")), mock.patch(__name__ + ".time.sleep"):
+        scan_newsrooms(stt2)
+    eq("scan_newsrooms が失敗を newsroom_fail に残す", list(stt2.get("newsroom_fail", {})), ["zz"])
+    with mock.patch.dict(NEWSROOMS, {"zz": ("試し", "試し", "https://example.invalid/")}, clear=True), \
+         mock.patch(__name__ + ".get", return_value="<html><a href='/a'>abcdefghijklmnopqrstu</a></html>"), \
+         mock.patch(__name__ + ".time.sleep"):
+        scan_newsrooms(stt2)
+    eq("取れたら newsroom_fail から消える", stt2.get("newsroom_fail"), {})
+    eq("見張る社数は件数から（上場34＋ニュースルーム17）", (len(WATCHLIST_FULL), len(NEWSROOMS), n_watch()), (34, 17, 51))
+    eq("I&H は NEWSROOMS に無い（2025-03 合併）", "ih" in NEWSROOMS, False)
+    # 本物の通り道で：全部読めた週・0件の欄の文に、件数から出した社数が入っているか（一度 NEWSROOMS を1件減らして数が動くのも見る）
+    win7 = [(date.today() - timedelta(days=i)).isoformat() for i in range(7, -1, -1)]
+    ok7 = {d: {"pages": 1, "rows": 100, "hits": 0, "ok": True, "why": ""} for d in win7}
+    with mock.patch(__name__ + ".load_state", return_value={"tdnet_days": ok7}), \
+         mock.patch(__name__ + ".load_events", return_value=[]):
+        md7 = build_weekly_section()
+        with mock.patch.dict(NEWSROOMS, {k: v for k, v in list(NEWSROOMS.items())[1:]}, clear=True):
+            md7b = build_weekly_section()
+    eq("週の欄（0件の週）に「CRO 51社」が出る", ("CRO 51社" in md7, "52社" in md7), (True, False))
+    eq("取り先が1件減ると欄の数も1減る（直書きでない）", "CRO 50社" in md7b, True)
 
     print(f"\n{'🟢 全部通りました' if ok[1] == 0 else '🔴 落ちた項目があります'}（通 {ok[0]} / 落 {ok[1]}）")
     return ok[1] == 0
