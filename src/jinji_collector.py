@@ -603,8 +603,12 @@ def mark_newsroom(st: dict, key: str, ok: bool, today: str = None):
 def newsroom_streak(st: dict, today: str = None) -> int:
     """STREAK_DAYS 日以上続けて取れていない取り先の数（初日も1日に数える）。"""
     t = date.fromisoformat(today or date.today().isoformat())
-    return sum(1 for d in st.get("newsroom_fail", {}).values()
-               if (t - date.fromisoformat(d)).days + 1 >= STREAK_DAYS)
+    # 🔴 NEWSROOMS に今ある鍵だけ数える。外した取り先（例：ih）の印は scan が二度と触らないので、
+    #    数えると毎日鳴り続ける（ミハル 11/17）。数える前に掃除もする。
+    fm = st.get("newsroom_fail", {})
+    for k in [k for k in fm if k not in NEWSROOMS]:
+        del fm[k]
+    return sum(1 for d in fm.values() if (t - date.fromisoformat(d)).days + 1 >= STREAK_DAYS)
 
 
 def ntfy_curl(text: str) -> bool:
@@ -618,10 +622,15 @@ def ntfy_curl(text: str) -> bool:
                 break
     if not topic:
         return False
-    r = subprocess.run(["curl", "-fsS", "--max-time", "20", "-H", "Content-Type: text/plain; charset=utf-8",
-                        "--data-binary", "@-", f"https://ntfy.sh/{topic}"],
-                       input=text.encode("utf-8"), capture_output=True, timeout=40)
-    return r.returncode == 0
+    # 🔴 送りが落ちても収集を道連れにしない（呼び手の後ろに save_state／append_events がある・ミハル 11/17）
+    try:
+        r = subprocess.run(["curl", "-fsS", "--max-time", "20", "-H", "Content-Type: text/plain; charset=utf-8",
+                            "--data-binary", "@-", f"https://ntfy.sh/{topic}"],
+                           input=text.encode("utf-8"), capture_output=True, timeout=40)
+        return r.returncode == 0
+    except Exception as e:
+        print(f"  ✗ ntfy: {type(e).__name__}")
+        return False
 
 
 def alert_newsroom(st: dict, today: str = None, send=None) -> bool:
@@ -633,9 +642,25 @@ def alert_newsroom(st: dict, today: str = None, send=None) -> bool:
     st["newsroom_alert_day"] = today   # 送れなくても同じ日は2回目を試さない（1日1回まで）
     text = f"ニュースルーム{n}社が{STREAK_DAYS}日続けて取れない"
     print(f"  🔴 {text}")
-    if not (send or ntfy_curl)(text):
+    try:
+        sent_ok = (send or ntfy_curl)(text)
+    except Exception as e:   # 差し替えた送り手でも落とさない
+        print(f"  ✗ 通知で例外: {type(e).__name__}")
+        sent_ok = False
+    if not sent_ok:
         print("  ✗ 通知できませんでした")
     return True
+
+
+def finish_daily(st: dict, evs: list, send=None):
+    """その日の収集を先に書き切ってから知らせる（知らせが落ちても state と events は残る・サクマ／ミハル 11/17）。"""
+    save_state(st)
+    append_events(evs)
+    try:
+        alert_newsroom(st, send=send)
+    except Exception as e:
+        print(f"  ✗ 知らせで例外: {type(e).__name__}")
+    save_state(st)   # newsroom_alert_day を残す
 
 
 # ---------- ウィークリー用セクション ----------
@@ -846,9 +871,7 @@ def main():
         save_state(st)
         evs += run_days([date.today() - timedelta(days=i) for i in (1, 0)])  # 昨日＋当日（dedupあり）
         evs += scan_newsrooms(st)
-        alert_newsroom(st)
-        save_state(st)
-        append_events(evs)
+        finish_daily(st, evs)
         print(f"✓ daily: 新規イベント{len(evs)}件")
         # 🔴 0件のときは、語の層が生きているかを陽性対照で確かめてから「なし」とする。
         #    [[feedback_fulltext_zero_hits]]／[[feedback_checks_can_silently_no_op]]
@@ -1293,6 +1316,9 @@ def self_test() -> bool:
     import unittest.mock as mock
     sent2 = []
     stt = {}
+    _nr = mock.patch.dict(NEWSROOMS, {"x": ("試しx", "試し", "https://example.invalid/x"),
+                                      "y": ("試しy", "試し", "https://example.invalid/y")}, clear=True)
+    _nr.start()
     for d in ("2026-11-01", "2026-11-02"):
         mark_newsroom(stt, "x", False, d); mark_newsroom(stt, "y", True, d)
         eq(f"{d}：2日目までは鳴らない", alert_newsroom(stt, d, send=lambda t: sent2.append(t) or True), False)
@@ -1304,6 +1330,44 @@ def self_test() -> bool:
     eq("翌日も続いていれば翌日は鳴る（1日1回）", alert_newsroom(stt, "2026-11-04", send=lambda t: sent2.append(t) or True), True)
     mark_newsroom(stt, "x", True, "2026-11-05")
     eq("取れたら数えなおし（鳴らない）", alert_newsroom(stt, "2026-11-05", send=lambda t: sent2.append(t) or True), False)
+    # 送りが例外を出しても alert_newsroom は落ちない（収集の state・events を道連れにしない）
+    st_e = {"newsroom_fail": {"x": "2026-11-01"}}
+    def _boom(t): raise subprocess.TimeoutExpired("curl", 40)
+    try:
+        r_e = alert_newsroom(st_e, "2026-11-03", send=_boom); fell = False
+    except Exception:
+        r_e, fell = None, True
+    eq("送りが例外を出しても落ちない（鳴らした扱い・その日はもう試さない）", (fell, r_e, st_e.get("newsroom_alert_day")),
+       (False, True, "2026-11-03"))
+    with mock.patch(__name__ + ".subprocess.run", side_effect=subprocess.TimeoutExpired("curl", 40)), \
+         mock.patch(__name__ + ".os.path.exists", return_value=True), \
+         mock.patch("builtins.open", mock.mock_open(read_data="NTFY_TOPIC=dummy\n")):
+        try:
+            r_c = ntfy_curl("試し"); fell_c = False
+        except Exception:
+            r_c, fell_c = None, True
+    eq("ntfy_curl は TimeoutExpired でも例外を上げず False", (fell_c, r_c), (False, False))
+    _nr.stop()
+    # 本物の通り道で：送りをわざと例外にしても、その日の state と events は書かれている（書く順も見る）
+    calls = []
+    st_d = {"newsroom_fail": {}}
+    with mock.patch(__name__ + ".save_state", side_effect=lambda st: calls.append(("save", dict(st)))), \
+         mock.patch(__name__ + ".append_events", side_effect=lambda ev: calls.append(("events", len(ev)))), \
+         mock.patch(__name__ + ".alert_newsroom", side_effect=RuntimeError("わざと")):
+        try:
+            finish_daily(st_d, [{"x": 1}]); fell_d = False
+        except Exception:
+            fell_d = True
+    eq("知らせが例外でも finish_daily は落ちず、先に state→events を書く",
+       (fell_d, [c[0] for c in calls][:2], ("events", 1) in calls), (False, ["save", "events"], True))
+    # 外した取り先の印が残っていても鳴らない（NEWSROOMS に無い鍵は数えず、掃除される）
+    st_g = {"newsroom_fail": {"gone_key": "2026-11-01"}}
+    eq("NEWSROOMS に無い鍵が3日前から残っていても鳴らない",
+       alert_newsroom(st_g, "2026-11-04", send=lambda t: sent2.append(t) or True), False)
+    eq("その印は掃除される", st_g.get("newsroom_fail"), {})
+    st_h = {"newsroom_fail": {next(iter(NEWSROOMS)): "2026-11-01"}}
+    eq("対照：NEWSROOMS にある鍵なら同じ日付で鳴る",
+       alert_newsroom(st_h, "2026-11-04", send=lambda t: sent2.append(t) or True), True)
     # 本物の通り道で：scan_newsrooms が失敗を数えているか（取り先を1件にして get を落とす）
     stt2 = {}
     with mock.patch.dict(NEWSROOMS, {"zz": ("試し", "試し", "https://example.invalid/")}, clear=True), \
