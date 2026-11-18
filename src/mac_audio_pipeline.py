@@ -895,6 +895,16 @@ def sanitize(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', "", name)[:60].strip() or "episode"
 
 
+def feed_title(nw, page) -> str:
+    """フィードに出す題。読み上げる題・記事の題と同じ「Article＆Script Title」を使う。
+    🔴 2026-11-18 公開の段だけ「Title」（取り込んだ原資料名）のままだった。8/21 に直したのは
+       合成の段だけで、出口が2つあるのに片方しか直していなかった。HGPI は一覧のリンク文字が
+       「...>>」で切れており、No.80 の回は題が切れたうえ、記事（U.E.N.O.Plan）と別の文になった。
+    Article＆Script Title が空の行だけ Title に戻る（翔太さん決定 11/18）。"""
+    return (nw.get_property_value(page, "Article＆Script Title")
+            or nw.get_property_value(page, "Title") or "タイトルなし")
+
+
 def process_notion(dry_run: bool = False, publish: bool = True) -> int:
     """Notionの「音声化待ち」を処理"""
     from notion_wordpress_uploader import NotionWordPressUploader
@@ -1031,7 +1041,7 @@ def process_notion(dry_run: bool = False, publish: bool = True) -> int:
     print(f"\n公開待ち: {len(pages2)}件")
     for page in pages2:
         page_id = page.get("id")
-        title = nw.get_property_value(page, "Title") or "タイトルなし"
+        title = feed_title(nw, page)
         audio = nw.get_property_value(page, "AudioPath") or ""
         # launchd（バックグラウンド）は Google Drive(CloudStorage) を読めない（macOS TCC）。
         # AudioPath が Drive 等を指していても、ローカル正本(OUT_DIR)に同名mp3があればそちらを使う。
@@ -1126,6 +1136,22 @@ def self_test() -> int:
     t(hold_streak("unknown") == 1, "出せたら数は消える")
     HOLD_STATE = _keep
     t(HOLD_STATE.endswith(".log"), "連続回数の控えは *.log（公開 repo に出さない）")
+    # フィードの題（2026-11-18）。本物の get_property_value に Notion と同じ形の行を通す。
+    from notion_wordpress_uploader import NotionWordPressUploader as _NW
+
+    class _Shim:
+        get_property_value = _NW.get_property_value
+
+    def _row(title, script_title):
+        rt = [{"plain_text": script_title}] if script_title else []
+        return {"properties": {"Title": {"type": "title", "title": [{"plain_text": title}]},
+                               "Article＆Script Title": {"type": "rich_text", "rich_text": rt}}}
+    t(feed_title(_Shim(), _row("【HGPI政策コラム】（No.80）「…（後 ...>>", "厚生労働省が「U.E.N.O.Plan」を公表"))
+      == "厚生労働省が「U.E.N.O.Plan」を公表", "フィードの題はふだん Article＆Script Title")
+    t(feed_title(_Shim(), _row("第131回社会保障審議会医療部会　資料", ""))
+      == "第131回社会保障審議会医療部会　資料", "Article＆Script Title が空なら Title に戻る")
+    _need = "        title = " + "feed_title(nw, page)\n"   # この行自身に当たらないよう分けて組む
+    t(me_src.count(_need) == 1, "公開の段は feed_title で題を決める")
     print(f"\nself-test: {ok}件合格 / {fail}件不合格")
     return 0 if fail == 0 else 1
 
