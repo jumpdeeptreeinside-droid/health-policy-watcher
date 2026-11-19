@@ -80,8 +80,16 @@ _NOTION_BASE = "https://api.notion.com/v1"
 # Notion クエリヘルパー
 # ──────────────────────────────────────────────
 
-def count_by_filter(filter_conditions: Dict) -> int:
-    """フィルター条件に合致するページの総件数を返す（ページネーション対応）"""
+_FAILED: list = []   # 取れなかった集計（400 等）。0件と区別して本文と終了コードに出す
+
+
+def count_by_filter(filter_conditions: Dict):
+    """フィルター条件に合致するページの総件数を返す（ページネーション対応）。
+
+    🔴 2026-11-20: 失敗（DB に無い欄・無い選択肢で 400）を 0件として返していた。
+       「完了（今週）」は存在しない Date(W-complete) を、執筆待ち/未着手は綴りの違う
+       選択肢名を見ていて、毎日 0件と出ていた。失敗は None を返して「取得失敗」と出す。
+    """
     url     = f"{_NOTION_BASE}/databases/{NOTION_DATABASE_ID}/query"
     payload = {"filter": filter_conditions, "page_size": 100}
     total   = 0
@@ -97,8 +105,14 @@ def count_by_filter(filter_conditions: Dict) -> int:
             else:
                 break
         except Exception as e:
-            logger.error(f"クエリエラー: {e}")
-            break
+            msg = ""
+            try:
+                msg = resp.json().get("message", "")[:160]
+            except Exception:
+                pass
+            logger.error(f"❌ クエリエラー: {e} {msg}")
+            _FAILED.append(msg or str(e)[:160])
+            return None
 
     return total
 
@@ -128,17 +142,19 @@ def build_report() -> Dict:
         "timestamp": now_jst.strftime('%Y-%m-%d %H:%M JST'),
 
         # コンテンツパイプライン
-        "未着手":           count_by_filter(_content_status("情報選択未着手")),
+        "未着手":           count_by_filter(_content_status("記事選択未着手")),
         "ストック":         count_by_filter(_content_status("ストック")),
-        "執筆待ちURL":      count_by_filter(_content_status("執筆待ち(URL)")),
-        "執筆待ちPDF":      count_by_filter(_content_status("執筆待ち(PDF)")),
+        "執筆待ちURL":      count_by_filter(_content_status("執筆待ち(url)")),
+        "執筆待ちPDF":      count_by_filter(_content_status("執筆待ち(pdf)")),
         "ファクトチェック": count_by_filter(_content_status("ファクトチェック待ち")),
 
-        # 完了（今週）: Date(W-complete) が7日以内のもの
+        # 完了（今週）: サイトに公開した日 Date(Web) が7日以内のもの
+        #   🔴 2026-11-20: 旧 Date(W-complete) は DB に無い（毎日 400→0件）。
+        #      公開日は site_uploader が Date(Web) に書いている。
         "完了今週": count_by_filter({
             "and": [
                 _content_status("完了"),
-                {"property": "Date(W-complete)", "date": {"on_or_after": week_ago}},
+                {"property": "Date(Web)", "date": {"on_or_after": week_ago}},
             ]
         }),
 
@@ -161,25 +177,30 @@ def build_report() -> Dict:
 # メール本文フォーマット
 # ──────────────────────────────────────────────
 
+def _n(v) -> str:
+    return "取得失敗" if v is None else f"{v:>3}件"
+
+
 def format_report(data: Dict) -> str:
+    data = {k: (_n(v) if k != "timestamp" else v) for k, v in data.items()}
     return (
         f"【医療政策ウォッチャー】日次進捗レポート\n"
         f"{data['timestamp']}\n"
         f"\n"
         f"■ コンテンツパイプライン\n"
-        f"  情報選択未着手      : {data['未着手']:>3}件\n"
-        f"  ストック            : {data['ストック']:>3}件\n"
-        f"  執筆待ち(URL)       : {data['執筆待ちURL']:>3}件\n"
-        f"  執筆待ち(PDF)       : {data['執筆待ちPDF']:>3}件\n"
-        f"  ファクトチェック待ち: {data['ファクトチェック']:>3}件\n"
-        f"  完了（今週）        : {data['完了今週']:>3}件\n"
+        f"  情報選択未着手      : {data['未着手']}\n"
+        f"  ストック            : {data['ストック']}\n"
+        f"  執筆待ち(URL)       : {data['執筆待ちURL']}\n"
+        f"  執筆待ち(PDF)       : {data['執筆待ちPDF']}\n"
+        f"  ファクトチェック待ち: {data['ファクトチェック']}\n"
+        f"  完了（今週）        : {data['完了今週']}\n"
         f"\n"
         f"■ 配信パイプライン\n"
-        f"  投稿待ち(WordPress) : {data['投稿待ち']:>3}件\n"
-        f"  音声化待ち(Podcast) : {data['音声化待ち']:>3}件\n"
+        f"  投稿待ち(WordPress) : {data['投稿待ち']}\n"
+        f"  音声化待ち(Podcast) : {data['音声化待ち']}\n"
         f"\n"
         f"■ 今週の新着記事\n"
-        f"  新規収集            : {data['今週新着']:>3}件\n"
+        f"  新規収集            : {data['今週新着']}\n"
         f"\n"
         f"─────────────────────────────\n"
         f"次回レポート: 明日 08:00 JST\n"
@@ -220,16 +241,23 @@ def main():
     try:
         data = build_report()
         body = format_report(data)
+        if _FAILED:
+            body += f"\n⚠️ 取れなかった集計 {len(_FAILED)} 件（Notion の欄・選択肢名を確認）\n"
         logger.info("\n" + body)
         send_report(body)
     except Exception as e:
         logger.error(f"予期せぬエラー: {e}")
         import traceback
         traceback.print_exc()
+        sys.exit(1)
 
     logger.info("=" * 50)
     logger.info("処理完了")
     logger.info("=" * 50)
+    if _FAILED:
+        # 🔴 400 を黙って success にしない（Actions の run を失敗にして目立たせる）
+        logger.error(f"❌ 取れなかった集計 {len(_FAILED)} 件: {_FAILED}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

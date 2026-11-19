@@ -1156,6 +1156,40 @@ def self_test() -> int:
     return 0 if fail == 0 else 1
 
 
+def advance_statuses(dry_run: bool = False) -> None:
+    """音声化の前に、送り出しの状態進め（完了の行の「-」→投稿待ち／音声化待ち）を1回呼ぶ。
+
+    🔴 2026-11-20: GitHub の notion_automation は毎時の予定が実測で中央値7時間おきにしか
+       動かず、記事が「完了／-／-」のまま止まっていた。毎時欠けずに動くこの launchd 側でも呼ぶ。
+       GitHub 側は残す（二重に走っても notion_status_automation 側で同じ記事を2回進めない）。
+    🔴 失敗しても音声側を止めない（SystemExit も含めてここで受ける）。
+       network は notion_status_automation の中で timeout 付き。ファイルは読み書きしない。
+    🔴 通知メール（「音声化待ち記事のお知らせ」）はここでは送らない：この直後に同じ実行で
+       音声化し、試聴依頼のメールが出るため。
+    """
+    try:
+        import logging
+        import notion_status_automation as nsa
+        lg = nsa.logger
+        if not lg.handlers:      # 1行ずつの結果も audio_pipeline.log に残す（root の設定は変えない）
+            h = logging.StreamHandler(sys.stdout)
+            h.setFormatter(logging.Formatter("  %(message)s"))
+            lg.addHandler(h)
+            lg.setLevel(logging.INFO)
+            lg.propagate = False
+        r = nsa.NotionAutomation().process_content_complete_status(dry_run=dry_run, notify=False)
+        if dry_run:
+            print(f"状態進め[dry-run]: 候補{r['found']}件 / 進めるはず{r['planned']}件"
+                  f"（うち音声化待ちへ{r['podcast']}件）")
+        else:
+            print(f"状態進め: 候補{r['found']}件 / 進めた{r['advanced']}件"
+                  f" / もう進んでいた{r['stale']}件 / 失敗{r['failed']}件")
+            if r["failed"]:
+                print("  ⚠ 状態進めに失敗した行があります（音声化は続ける）")
+    except (Exception, SystemExit) as e:
+        print(f"  ⚠ 状態進めが失敗（音声化は続ける）: {type(e).__name__}: {e}")
+
+
 def main():
     if "--self-test" in sys.argv:
         sys.exit(self_test())
@@ -1184,6 +1218,7 @@ def main():
             publish_episode(out, args.title)
         sys.exit(0 if ok else 1)
 
+    advance_statuses(dry_run=args.dry_run)
     n = process_notion(dry_run=args.dry_run)
     print(f"\n処理完了: {n}件")
 

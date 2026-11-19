@@ -67,6 +67,14 @@ def send_site_notification(uploaded: list, title_warnings: list = None) -> None:
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD_WP:
         logger.warning("Gmail未設定のため完了通知メールをスキップします")
         return
+    # 🔴 2026-11-20: workflow が NOTIFY_EMAIL を渡しておらず、宛先 "" のまま送って
+    #    553（recipient <>）で毎回落ちていた（例外はここで飲まれ run は success）。
+    #    宛先が空なら送らず、Actions の注記として目立つ警告を出す（公開そのものは止めない）。
+    if not (NOTIFY_TO_WP or "").strip():
+        logger.warning("NOTIFY_EMAIL が未設定のため公開完了メールを送りません（宛先が空）")
+        if os.environ.get("GITHUB_ACTIONS"):
+            print("::warning::NOTIFY_EMAIL が未設定のため公開完了メールを送りませんでした")
+        return
     lines = [f"  [{i+1}] {a['title']}\n      {a['url']}" for i, a in enumerate(uploaded)]
     body = (
         "【医療政策ウォッチャー】公式サイト公開のお知らせ\n\n"

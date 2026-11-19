@@ -40,6 +40,8 @@ jobs:
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          # 🔴 2026-11-20: これが無く、公開完了メールが宛先 "" で 553 になっていた
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
           SITE_ARTICLES_DIR: ${{ github.workspace }}/site/src/articles-data
         run: python src/site_uploader.py
 
