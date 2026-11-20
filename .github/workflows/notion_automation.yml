@@ -36,11 +36,9 @@ jobs:
       
       - name: Notionステータスを自動更新
         env:
-          NOTIFY_EMAIL_STATUS: ${{ secrets.NOTIFY_EMAIL_STATUS }}
+          # 🔴 2026-11-20: お知らせメールは廃止＝この段に宛先・Gmail は渡さない（失敗通知は下の段）
           NOTION_API_KEY:     ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-          GMAIL_ADDRESS:      ${{ secrets.GMAIL_ADDRESS }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: |
           cd src
           python notion_status_automation.py

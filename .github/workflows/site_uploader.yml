@@ -7,7 +7,13 @@ on:
     - cron: '0 0 * * *'    # JST 9:00
     - cron: '0 5 * * *'    # JST 14:00
     - cron: '30 10 * * *'  # JST 19:30
-  workflow_dispatch:
+  workflow_dispatch:   # 🔴 2026-11-20〜 Mac の launchd（launchd/README.md）が決まった時刻に送る
+
+# 🔴 2026-11-20: Mac の dispatch と cron が重なっても同時に走らせない（同じ「投稿待ち」を2本が拾い、番号の取り合いで二重公開しうる）。
+#    後から来た方は待つ（取り消さない）＝前の実行が Notion を「完了」にした後に検索する。
+concurrency:
+  group: site-uploader
+  cancel-in-progress: false
 
 jobs:
   upload:

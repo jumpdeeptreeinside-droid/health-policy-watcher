@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 雛形（2026-11-20）。__HOME__ を自分のホームに置き換えてから ~/Library/LaunchAgents へ。手順は launchd/README.md -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.crosshealth.dispatch-daily-digest</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>__HOME__/health-policy-watcher/src/mac_dispatch.py</string>
+    <string>daily_digest</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>5</integer></dict>
+  </array>
+  <key>StandardOutPath</key><string>__HOME__/health-policy-watcher/logs/dispatch_daily_digest.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/health-policy-watcher/logs/dispatch_daily_digest.err</string>
+  <key>WorkingDirectory</key><string>__HOME__/health-policy-watcher</string>
+</dict>
+</plist>

@@ -1164,8 +1164,7 @@ def advance_statuses(dry_run: bool = False) -> None:
        GitHub 側は残す（二重に走っても notion_status_automation 側で同じ記事を2回進めない）。
     🔴 失敗しても音声側を止めない（SystemExit も含めてここで受ける）。
        network は notion_status_automation の中で timeout 付き。ファイルは読み書きしない。
-    🔴 通知メール（「音声化待ち記事のお知らせ」）はここでは送らない：この直後に同じ実行で
-       音声化し、試聴依頼のメールが出るため。
+    🔴 「音声化待ち記事のお知らせ」メールは廃止（2026-11-20、試聴依頼メールが代わり）。
     """
     try:
         import logging
@@ -1177,7 +1176,7 @@ def advance_statuses(dry_run: bool = False) -> None:
             lg.addHandler(h)
             lg.setLevel(logging.INFO)
             lg.propagate = False
-        r = nsa.NotionAutomation().process_content_complete_status(dry_run=dry_run, notify=False)
+        r = nsa.NotionAutomation().process_content_complete_status(dry_run=dry_run)
         if dry_run:
             print(f"状態進め[dry-run]: 候補{r['found']}件 / 進めるはず{r['planned']}件"
                   f"（うち音声化待ちへ{r['podcast']}件）")

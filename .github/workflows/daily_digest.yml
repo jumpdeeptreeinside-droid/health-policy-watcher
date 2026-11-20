@@ -4,7 +4,13 @@ name: 海外ヘッドラインまとめ生成
 on:
   schedule:
     - cron: '5 10 * * *'   # JST 19:05（日次の国際ニュースを夕方に束ねる）
-  workflow_dispatch:
+  workflow_dispatch:   # 🔴 2026-11-20〜 Mac の launchd（launchd/README.md）が決まった時刻に送る
+
+# 🔴 2026-11-20: Mac の dispatch と cron が重なっても同時に走らせない（同じ国際記事を2本のまとめに入れうる）。
+#    後から来た方は待つ（取り消さない）＝前の実行が Notion を「完了」にした後に検索する。
+concurrency:
+  group: daily-digest
+  cancel-in-progress: false
 
 jobs:
   digest:

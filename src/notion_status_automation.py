@@ -22,6 +22,7 @@ Notionデータベースのステータス自動更新スクリプト
   ・Notion の 400 は黙って0件にしない：検索の失敗は例外、書き込みの失敗は件数に数え、
     main は1件でも失敗があれば exit 1（＝Actions の失敗通知が飛ぶ）。
   ・network は必ず timeout。
+  ・「音声化待ち記事のお知らせ」メールは廃止（2026-11-20、試聴依頼メールが代わり）。
 
 実行方法:
     python notion_status_automation.py             # 進める（GitHub Actions はこれ）
@@ -36,7 +37,6 @@ import logging
 from typing import Callable, List, Dict, Optional
 
 import requests
-import mailer          # 送り方（465・timeout）は mailer.py だけに置く
 
 # Windows環境での文字エンコーディング問題を解決
 if sys.platform == 'win32' and __name__ == "__main__":
@@ -69,51 +69,11 @@ def _load_settings():
         return None, None, "なし"
 
 
-GMAIL_ADDRESS     = os.environ.get('GMAIL_ADDRESS', '')
-GMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD', '')
-# 🔴 PUBLIC repo なので宛先はコードに書かない（2026-10-03 翔太さん判断）。
-#    ここは宛先が2件（系統が違う）ので Secret NOTIFY_EMAIL_STATUS をカンマ区切りで使う。
-#    🔴 2026-11-20: 未設定の判定は import 時でなく送る時/main で行う（import 時に SystemExit を
-#       投げると、import した mac_audio_pipeline ごと止まる）。
-NOTIFY_TO = [x.strip() for x in os.environ.get("NOTIFY_EMAIL_STATUS", "").split(",") if x.strip()]
-
-
-def send_podcast_notification(articles: list) -> None:
-    """音声化待ちになった記事の通知メールを送信する"""
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-
-    if not NOTIFY_TO:
-        logger.warning("NOTIFY_EMAIL_STATUS が未設定のため通知メールを送りません")
-        return
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-        logger.warning("Gmail未設定のため通知メールをスキップします")
-        return
-
-    article_list = "\n".join(
-        f"  [{i+1}] {art['title']}" for i, art in enumerate(articles)
-    )
-    body = f"""\
-【医療政策ウォッチャー】音声化待ち記事のお知らせ
-
-以下の記事の音声収録をお願いします。
-
-■ 音声化待ち記事（{len(articles)}件）
-{article_list}
-
-収録完了後、Notionで Status(Podcast) を「完了」に変更してください。
-"""
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"【要対応】音声化待ち記事 {len(articles)}件"
-    msg["From"]    = GMAIL_ADDRESS
-    msg["To"]      = ", ".join(NOTIFY_TO)
-    msg.attach(MIMEText(body, "plain", "utf-8"))
-
-    try:
-        mailer.send(msg, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, NOTIFY_TO)
-        logger.info(f"音声化待ち通知メール送信完了: {len(NOTIFY_TO)}件")
-    except Exception as e:
-        logger.error(f"メール送信失敗: {e}")
+# 🔴 2026-11-20 廃止：「音声化待ち記事のお知らせ」メール（send_podcast_notification・宛先 NOTIFY_EMAIL_STATUS）。
+#    手作業で収録していた時代の文面で、いまは同じ記事が mac_audio_pipeline で音声化され
+#    【試聴依頼】メールが出る＝それが代わり（翔太さん決定 11/20「a」）。
+#    呼び手が2つ（GitHub / Mac）になり「どちらが先に進めたかで送ったり送らなかったり」になるため、
+#    片方だけ送る形も残さずコードごと消した。戻すときは git の 3752be6 以前を見る。
 
 
 def _status_of(page: Dict, prop_name: str) -> Optional[str]:
@@ -224,13 +184,14 @@ class NotionAutomation:
             ]
         })
 
-    def process_content_complete_status(self, dry_run: bool = False, notify: bool = True,
+    def process_content_complete_status(self, dry_run: bool = False,
                                         pages: Optional[List[Dict]] = None,
                                         fetch: Optional[Callable[[str], Dict]] = None,
                                         write: Optional[Callable[[str, Dict], bool]] = None) -> Dict:
         """完了の行の「-」を進める。
 
-        dry_run=True … Notion に書かない・メールも送らない。「進めるはずの件数」だけ数える。
+        dry_run=True … Notion に書かない。「進めるはずの件数」だけ数える。
+        （メールは送らない＝お知らせメールは 2026-11-20 廃止）
         pages/fetch/write … 陽性対照（--self-test）用の差し替え口。通常は None。
 
         戻り値: {"found", "planned", "advanced", "stale", "failed", "podcast"}
@@ -241,7 +202,6 @@ class NotionAutomation:
         write = write or self.update_page_properties
         r = {"found": len(pages), "planned": 0, "advanced": 0, "stale": 0, "failed": 0,
              "podcast": 0}
-        podcast_notified: list = []
         logger.info(f"完了かつ未振り分けの候補: {len(pages)} 件")
 
         for page in pages:
@@ -277,13 +237,10 @@ class NotionAutomation:
                 r["advanced"] += 1
                 if PODCAST_PROP in plan:
                     r["podcast"] += 1
-                    podcast_notified.append({"title": title})
             else:
                 logger.error(f"  ❌ 更新失敗: {title[:40]}（{names}）")
                 r["failed"] += 1
 
-        if podcast_notified and notify and not dry_run:
-            send_podcast_notification(podcast_notified)
         return r
 
 
@@ -339,7 +296,7 @@ def self_test() -> int:
     writes: list = []
     rows = [_fake_page("a", "完了", "-", "-", "昨日の形")]
     r = auto.process_content_complete_status(
-        dry_run=True, notify=False, pages=rows,
+        dry_run=True, pages=rows,
         fetch=lambda pid: (_ for _ in ()).throw(AssertionError("dry-run で取りに行った")),
         write=lambda pid, p: writes.append(pid) or True)
     check("dry-run: 昨日の形を1件拾う", (r["planned"], r["podcast"]), (1, 1))
@@ -355,9 +312,9 @@ def self_test() -> int:
         return True
 
     stale_rows = [_fake_page("a", "完了", "-", "-", "昨日の形")]   # 検索結果は古いまま
-    r1 = auto.process_content_complete_status(notify=False, pages=stale_rows,
+    r1 = auto.process_content_complete_status(pages=stale_rows,
                                               fetch=lambda pid: db[pid], write=fake_write)
-    r2 = auto.process_content_complete_status(notify=False, pages=stale_rows,
+    r2 = auto.process_content_complete_status(pages=stale_rows,
                                               fetch=lambda pid: db[pid], write=fake_write)
     check("1回目は進める", (r1["advanced"], r1["stale"]), (1, 0))
     check("2回目は書かない（取り直しで止まる）", (r2["advanced"], r2["stale"]), (0, 1))
@@ -367,15 +324,21 @@ def self_test() -> int:
     db["z"] = _fake_page("z", "完了", "投稿待ち", "試聴待ち")
     writes.clear()
     r3 = auto.process_content_complete_status(
-        notify=False, pages=[_fake_page("z", "完了", "投稿待ち", "-")],
+        pages=[_fake_page("z", "完了", "投稿待ち", "-")],
         fetch=lambda pid: db[pid], write=fake_write)
     check("試聴待ちを音声化待ちに戻さない", (writes, _status_of(db["z"], PODCAST_PROP)), ([], "試聴待ち"))
 
     # 5) 書き込み失敗は failed に数える（黙って success にしない）
     r4 = auto.process_content_complete_status(
-        notify=False, pages=[_fake_page("f", "完了", "-", "-")],
+        pages=[_fake_page("f", "完了", "-", "-")],
         fetch=lambda pid: _fake_page("f", "完了", "-", "-"), write=lambda pid, p: False)
     check("書き込み失敗を数える", r4["failed"], 1)
+
+    # 6) お知らせメールは廃止（2026-11-20）：送る道具を持たない
+    import inspect
+    src = inspect.getsource(NotionAutomation.process_content_complete_status)
+    check("お知らせメールを送らない（mailer を持たず・処理にメールの語が無い）",
+          ("mailer" in globals(), "send_" in src or "mail" in src), (False, False))
 
     print(f"\nself-test: {ok}件合格 / {fail}件不合格")
     return 0 if fail == 0 else 1
@@ -398,10 +361,6 @@ def main():
     logger.info("=" * 50)
     logger.info("Notionステータス自動更新を開始します" + ("（dry-run・書かない）" if dry_run else ""))
     logger.info("=" * 50)
-    if not dry_run and not NOTIFY_TO:
-        # 従来どおり：宛先が無い設定では動かさない（理由を出して失敗にする）
-        logger.error("NOTIFY_EMAIL_STATUS が未設定です。宛先が無いので送信しません。")
-        sys.exit(1)
 
     try:
         r = NotionAutomation().process_content_complete_status(dry_run=dry_run)
