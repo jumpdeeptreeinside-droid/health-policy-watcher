@@ -25,6 +25,7 @@ WordPress版（notion_wordpress_uploader.py）の置き換え。tekutekuradio �
   SITE_BASE_URL     = 省略時 https://www.crosshealthjp.org
 """
 import glob
+import hashlib
 import html as html_lib
 import json
 import os
@@ -98,8 +99,32 @@ def send_site_notification(uploaded: list, title_warnings: list = None) -> None:
         logger.error(f"メール送信失敗: {e}")
 
 
+def notion_key(page_id: str) -> str:
+    """記事 JSON に残す「どの Notion 行から作ったか」の印。
+    🔴 crosshealthjp は公開 repo になりうるので page_id そのものは書かず、ハッシュの頭16桁だけ。"""
+    return hashlib.sha256(page_id.replace("-", "").lower().encode()).hexdigest()[:16]
+
+
+def published_index(articles_dir: str) -> dict:
+    """articles-data にある記事のうち、印（notionKey）を持つものを {印: (pid, date)} で返す。
+    印は 2026-11-20 以降に出した記事にだけある（それより前の記事は対象外）。"""
+    idx = {}
+    for path in glob.glob(os.path.join(articles_dir, "*.json")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        k = rec.get("notionKey")
+        if k:
+            idx[k] = (str(rec.get("pid")), rec.get("date", ""))
+    return idx
+
+
 class SiteUploader(NotionWordPressUploader):
     """WordPress の代わりに crosshealthjp の articles-data JSON を生成する"""
+
+    writeback_failed = 0   # 書き戻しに失敗した本数（main が exit 1 にする）
 
     @staticmethod
     def _git(args: list, cwd: str) -> tuple:
@@ -212,7 +237,12 @@ class SiteUploader(NotionWordPressUploader):
         success_count = 0
         uploaded: list = []
         pending: list = []          # push が通ってから Notion に書く分
+        redo: list = []             # もう公開済み＝書き戻しだけやり直す分（push 不要）
         title_warnings: list = []   # 題に英単語が残った分（公開は止めない）
+        # 🔴 2026-11-20: push は通ったのに Notion の書き戻しが落ちると、行は「投稿待ち」のまま残り、
+        #    次の実行が別の番号でもう一度公開していた（二重公開）。JSON に印を残し、印があれば
+        #    出し直さずに書き戻しだけをやり直す（何度走っても1本＝冪等）。
+        done_idx = published_index(SITE_ARTICLES_DIR)
 
         for page in pages:
             page_id = page.get('id')
@@ -223,6 +253,15 @@ class SiteUploader(NotionWordPressUploader):
                 or 'タイトルなし'
             )
             logger.info(f"処理中 (DB): {db_title[:60]}")
+
+            hit = done_idx.get(notion_key(page_id))
+            if hit:
+                pid0, date0 = hit
+                logger.warning(f"  ⚠️  もう公開済み（{pid0}）＝出し直さず、書き戻しだけやり直します")
+                redo.append({"page_id": page_id, "pid": pid0, "path": "",
+                             "site_url": f"{SITE_BASE_URL}/articles/{pid0}/", "title": db_title,
+                             "today": date0 or datetime.now(_JST).strftime('%Y-%m-%d')})
+                continue
 
             article_page_id = self.get_article_linked_page_id(page)
             if not article_page_id:
@@ -256,6 +295,7 @@ class SiteUploader(NotionWordPressUploader):
                 "tags": [],
                 "origUrl": "",
                 "html": html_content,
+                "notionKey": notion_key(page_id),
             }
             out_path = os.path.join(SITE_ARTICLES_DIR, f"{pid}.json")
             with open(out_path, "w", encoding="utf-8") as f:
@@ -272,10 +312,17 @@ class SiteUploader(NotionWordPressUploader):
             continue
 
 
+        # ── もう公開済みの分：書き戻しだけ（push は要らない）
+        for it in redo:
+            if self._write_back(it):
+                success_count += 1
+            else:
+                self.writeback_failed += 1
+
         # ───────── push が通ってから Notion に書く（2026-10-04 の作り直し） ─────────
         if not pending:
             logger.info("書き出した記事がありません。Notion は触りません。")
-            return 0
+            return success_count
         repo = os.path.abspath(os.path.join(SITE_ARTICLES_DIR, "..", ".."))
         if not self._commit_and_push(repo, len(pending)):
             # 🔴 push できなかったら書いたファイルを消す。
@@ -297,6 +344,8 @@ class SiteUploader(NotionWordPressUploader):
             if self._write_back(it):
                 success_count += 1
                 uploaded.append({"title": it["title"], "url": it["site_url"]})
+            else:
+                self.writeback_failed += 1
 
         if uploaded:
             send_site_notification(uploaded, title_warnings)
@@ -309,8 +358,13 @@ class SiteUploader(NotionWordPressUploader):
             logger.info(f"  ✅ Notion URL(Web) 更新: {site_url}")
         if self.update_podcast_description(page_id, site_url):
             logger.info("  ✅ Notion PodcastDescription 更新完了")
-        if self.update_notion_status(page_id, "完了"):
+        # 🔴 2026-11-20: ステータスが「完了」にならなければ失敗（行が「投稿待ち」のまま残る）。
+        #    次の実行は印を見て書き戻しだけやり直す。ここで True を返すと黙って success になる。
+        status_ok = self.update_notion_status(page_id, "完了")
+        if status_ok:
             logger.info("  ✅ Notion ステータス更新: 投稿待ち → 完了")
+        else:
+            logger.error("  ❌ Notion ステータスを「完了」にできませんでした（次の実行で書き戻しだけやり直す）")
         import requests as _rq
         try:
             resp = _rq.patch(
@@ -323,19 +377,105 @@ class SiteUploader(NotionWordPressUploader):
             logger.info(f"  ✅ Date(Web) 記録: {it['today']}")
         except Exception as e:
             logger.warning(f"  ⚠️  Date(Web) 記録失敗: {e}")
-        return True
+        return status_ok
 
+
+
+def self_test() -> int:
+    """陽性対照：「push は成功・Notion の書き戻しは失敗」を偽物で作り、次の回で二重に公開しないか。
+    network・git・Notion には一切触らない（全部差し替え）。"""
+    import tempfile
+    import requests as _rq
+    global SITE_ARTICLES_DIR
+    ok = fail = 0
+
+    def check(name, got, want):
+        nonlocal ok, fail
+        if got == want:
+            ok += 1; print(f"  ok  {name}")
+        else:
+            fail += 1; print(f"  NG  {name}: got={got!r} want={want!r}")
+
+    class _Resp:
+        status_code = 200
+        def raise_for_status(self): pass
+
+    class _Conv:
+        def convert(self, blocks): return "本文です。" * 10
+
+    notion = {"P1": "投稿待ち"}                 # 偽の Notion（行の Status(Web)）
+    pushes, status_ok = [], {"v": False}
+
+    class Fake(SiteUploader):
+        def __init__(self):
+            self.converter = _Conv(); self.notion_base = "https://invalid"; self.notion_headers = {}
+            self.writeback_failed = 0
+        def query_database(self, f):
+            return [{"id": k, "properties": {}} for k, v in notion.items() if v == "投稿待ち"]
+        def get_property_value(self, page, name): return "テストの記事"
+        def get_article_linked_page_id(self, page): return "A" + page["id"]
+        def fetch_page_title(self, pid): return "テストの記事"
+        def fetch_page_blocks(self, pid): return [{"type": "paragraph"}]
+        def _truncate_at_factcheck(self, b): return b
+        def _markdown_to_html(self, md): return "<p>" + md + "</p>"
+        def _get_source_url(self, page): return ""
+        def _commit_and_push(self, repo, n):
+            pushes.append(n); return True
+        def update_notion_url_web(self, pid, url): return True
+        def update_podcast_description(self, pid, url): return True
+        def update_notion_status(self, pid, name):
+            if status_ok["v"]:
+                notion[pid] = name; return True
+            return False
+
+    orig_patch, orig_send = _rq.patch, globals()["send_site_notification"]
+    _rq.patch = lambda *a, **k: _Resp()
+    globals()["send_site_notification"] = lambda *a, **k: None
+    old_dir = SITE_ARTICLES_DIR
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            SITE_ARTICLES_DIR = d
+            # 1回目：push は通る・ステータスの書き戻しが落ちる
+            u1 = Fake(); u1.process()
+            files1 = sorted(os.listdir(d))
+            check("1回目：1本公開（push 1回）", (len(files1), pushes), (1, [1]))
+            check("1回目：書き戻し失敗を数える（main は exit 1）", u1.writeback_failed, 1)
+            check("1回目：行は投稿待ちのまま", notion["P1"], "投稿待ち")
+            rec = json.load(open(os.path.join(d, files1[0]), encoding="utf-8"))
+            check("JSON に印（page_id そのものではない）", (rec.get("notionKey") == notion_key("P1"),
+                                                    "P1" in json.dumps(rec)), (True, False))
+            # 2回目：書き戻しが通るようになった
+            status_ok["v"] = True
+            u2 = Fake(); n2 = u2.process()
+            check("2回目：新しい JSON を作らない（二重公開しない）", sorted(os.listdir(d)), files1)
+            check("2回目：push しない", pushes, [1])
+            check("2回目：書き戻しだけやり直して完了", (n2, notion["P1"], u2.writeback_failed), (1, "完了", 0))
+            # 3回目：もう拾わない
+            u3 = Fake(); n3 = u3.process()
+            check("3回目：何もしない", (n3, sorted(os.listdir(d)), pushes), (0, files1, [1]))
+    finally:
+        _rq.patch = orig_patch
+        globals()["send_site_notification"] = orig_send
+        SITE_ARTICLES_DIR = old_dir
+    print(f"\nself-test: {ok}件合格 / {fail}件不合格")
+    return 0 if fail == 0 else 1
 
 
 def main():
+    if "--self-test" in sys.argv:
+        sys.exit(self_test())
     logger.info("=" * 55)
     logger.info("Notion → 公式サイト(crosshealthjp) 自動公開を開始します")
     logger.info("=" * 55)
     try:
-        count = SiteUploader().process()
+        up = SiteUploader()
+        count = up.process()
         logger.info("\n" + "=" * 55)
-        logger.info(f"処理完了 / サイト公開: {count} 件")
+        logger.info(f"処理完了 / サイト公開: {count} 件 / 書き戻し失敗: {up.writeback_failed} 件")
         logger.info("=" * 55)
+        if up.writeback_failed:
+            logger.error(f"❌ Notion への書き戻しに {up.writeback_failed} 件失敗（記事は公開済み・次の実行でやり直す）")
+            sys.exit(1)
     except Exception as e:
         logger.error(f"予期せぬエラー: {e}")
         import traceback

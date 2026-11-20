@@ -11,7 +11,7 @@ GitHub の schedule（cron）は実測で5〜10時間遅れて起動するため
 順番（夕方）：19:05 状態進め→まとめ作成の dispatch → 19:15 音声パイプライン（まとめを音声化）→ 19:30 サイト公開。
 
 - 鍵はここにも plist にも置かない。gh CLI の既存ログインを使う（`env -i HOME=… PATH=…` で通ることを 2026-11-20 に確認）。
-- gh には timeout 60秒。失敗しても他のジョブには触らない。ログは `~/health-policy-watcher/logs/dispatch_*.log`（CloudStorage は使わない）。
+- gh には timeout 60秒。失敗しても他のジョブには触らない。失敗はログに `❌❌ DISPATCH FAILED` と残し、既存の ntfy（話題名は ~/sakuma/.env）に workflow 名と種類だけを1行（題・アカウント名は入れない）。ログは `~/health-policy-watcher/logs/dispatch_*.log`（CloudStorage は使わない）。
 - 「音声化待ち記事のお知らせ」メールは廃止（2026-11-20、試聴依頼メールが代わり）。
 
 ## 配置の手順（監査と翔太さんの OK のあと）

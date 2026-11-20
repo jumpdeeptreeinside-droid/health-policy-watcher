@@ -6,7 +6,10 @@
 （site_uploader の予定 9:00/14:00/19:30 JST、daily_digest の予定 19:05 JST）。
 手動起動（workflow_dispatch）はすぐに動く。cron は予備として残す。
 二重に走っても壊れないことは workflow 側の concurrency と各スクリプトで担保している
-（site_uploader＝「投稿待ち」だけを拾い push 後に「完了」、daily_digest＝直近14時間に作っていれば作らない）。
+（site_uploader＝「投稿待ち」だけを拾い push 後に「完了」・公開済みの印があれば書き戻しだけ、
+  daily_digest＝直近の JST 12:00 以降に作っていれば作らない・同じ日付の題は「その2」）。
+dispatch の失敗（gh のログイン切れ・timeout 等）はログに ❌❌ DISPATCH FAILED と残し、
+既存の ntfy（mac_audio_pipeline._ntfy）に workflow 名と種類だけを1行で知らせる。
 
 使い方:
   python3 src/mac_dispatch.py site_uploader
@@ -67,12 +70,34 @@ def advance_before_digest(dry_run: bool) -> None:
         print(f"  ⚠ 状態進めが失敗（dispatch は送る）: {type(e).__name__}: {e}")
 
 
-def run(name: str, dry_run: bool = False, runner=subprocess.run) -> int:
+AUTH_HINTS = ("gh auth login", "HTTP 401", "Bad credentials", "authentication", "not logged")
+
+
+def notify_failure(text: str) -> bool:
+    """既存の ntfy（mac_audio_pipeline._ntfy・話題名は ~/sakuma/.env）に1行だけ知らせる。
+    🔴 新しい通知先は作らない。🔴 文に記事の題・アカウント名・gh の出力を入れない（名前と種類だけ）。"""
+    try:
+        from mac_audio_pipeline import _ntfy
+        return bool(_ntfy(text))
+    except Exception:
+        return False
+
+
+def fail_out(name: str, kind: str, notifier) -> int:
+    """失敗をログにはっきり残し、ntfy に1行。🔴 黙って成功に見せない（exit 1）。"""
+    print(f"  ❌❌ DISPATCH FAILED [{name}] {kind} — Actions は起きていません（cron の遅れた起動だけが残る）")
+    sent = notifier(f"watcher dispatch 失敗: {name}（{kind}）")
+    print(f"  ntfy: {'送った' if sent else '送れなかった/設定なし'}")
+    return 1
+
+
+def run(name: str, dry_run: bool = False, runner=subprocess.run, notifier=None) -> int:
+    notifier = notifier or notify_failure
     print(f"=== {datetime.now():%Y-%m-%d %H:%M:%S} dispatch {name}{' [dry-run]' if dry_run else ''}")
     gh = gh_path()
     if not gh:
         print("  ❌ gh が見つかりません（PATH を確認）")
-        return 1
+        return fail_out(name, "gh が無い", notifier)
     cmd = dispatch_cmd(name, gh)
     if name == "daily_digest":
         advance_before_digest(dry_run)
@@ -84,20 +109,22 @@ def run(name: str, dry_run: bool = False, runner=subprocess.run) -> int:
                    timeout=GH_TIMEOUT)
     except subprocess.TimeoutExpired:
         print(f"  ❌ gh が {GH_TIMEOUT} 秒で返りませんでした（送れたかは Actions で確認）")
-        return 1
+        return fail_out(name, "timeout", notifier)
     except Exception as e:
         print(f"  ❌ gh を起動できません: {type(e).__name__}: {e}")
-        return 1
+        return fail_out(name, "gh を起動できない", notifier)
     out = ((r.stdout or "") + (r.stderr or "")).strip()
     if r.returncode != 0:
         print(f"  ❌ dispatch 失敗 rc={r.returncode}: {out[:300]}")
-        return 1
+        auth = any(h.lower() in out.lower() for h in AUTH_HINTS)
+        return fail_out(name, "gh のログイン切れの疑い" if auth else f"rc={r.returncode}", notifier)
     print(f"  ✅ dispatch 送信: {WORKFLOWS[name]}（{out[:200]}）")
     return 0
 
 
 def self_test() -> int:
     ok = fail = 0
+    _quiet = lambda text: False   # 🔴 self-test で本物の ntfy を鳴らさない
 
     def check(n, got, want):
         nonlocal ok, fail
@@ -121,16 +148,31 @@ def self_test() -> int:
         def __init__(self, rc): self.returncode, self.stdout, self.stderr = rc, "", "HTTP 422"
 
     check("dry-run は gh を呼ばない",
-          (run("site_uploader", dry_run=True, runner=lambda *a, **k: calls.append(a) or R(0)), calls),
+          (run("site_uploader", dry_run=True, runner=lambda *a, **k: calls.append(a) or R(0), notifier=_quiet), calls),
           (0, []))
-    check("gh の失敗は exit 1", run("site_uploader", runner=lambda *a, **k: R(1)), 1)
+    check("gh の失敗は exit 1", run("site_uploader", runner=lambda *a, **k: R(1), notifier=_quiet), 1)
 
     def hang(*a, **k):
         raise subprocess.TimeoutExpired(a[0], k.get("timeout"))
-    check("gh が固まっても timeout で返る（exit 1）", run("site_uploader", runner=hang), 1)
+    check("gh が固まっても timeout で返る（exit 1）", run("site_uploader", runner=hang, notifier=_quiet), 1)
     seen = {}
-    run("site_uploader", runner=lambda *a, **k: seen.update(k) or R(0))
+    run("site_uploader", runner=lambda *a, **k: seen.update(k) or R(0), notifier=_quiet)
     check("timeout を必ず渡す", seen.get("timeout"), GH_TIMEOUT)
+    # 失敗はログと ntfy（題・出力を入れない）
+    sent = []
+
+    class RA:
+        returncode, stdout = 1, ""
+        stderr = "To get started with GitHub CLI, please run:  gh auth login  (user: someone)"
+    rc = run("site_uploader", runner=lambda *a, **k: RA(), notifier=lambda t: sent.append(t) or True)
+    check("ログイン切れは exit 1", rc, 1)
+    check("ntfy に1行（名前と種類だけ）", sent, ["watcher dispatch 失敗: site_uploader（gh のログイン切れの疑い）"])
+    sent.clear()
+    run("site_uploader", runner=hang, notifier=lambda t: sent.append(t) or True)
+    check("timeout も ntfy", sent, ["watcher dispatch 失敗: site_uploader（timeout）"])
+    sent.clear()
+    run("site_uploader", runner=lambda *a, **k: R(0), notifier=lambda t: sent.append(t) or True)
+    check("成功では知らせない", sent, [])
     print(f"\nself-test: {ok}件合格 / {fail}件不合格")
     return 0 if fail == 0 else 1
 

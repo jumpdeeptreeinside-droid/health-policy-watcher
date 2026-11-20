@@ -14,6 +14,7 @@
 """
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -57,33 +58,100 @@ def gemini_headlines(items: list) -> list:
 
 
 DIGEST_PREFIX = "【海外ヘッドライン】"
-ONE_PER_DAY_HOURS = 14   # この時間内に作ったまとめがあれば作らない（1日1本を守る）
+
+
+def last_noon_utc(now_utc: datetime) -> datetime:
+    """いまから見て直近の JST 12:00（UTC で返す）。"""
+    j = now_utc.astimezone(_JST)
+    noon = j.replace(hour=12, minute=0, second=0, microsecond=0)
+    if j < noon:
+        noon -= timedelta(days=1)
+    return noon.astimezone(timezone.utc)
+
+
+def _z(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def recent_digest_filter(now_utc: datetime) -> dict:
-    since = (now_utc - timedelta(hours=ONE_PER_DAY_HOURS)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     return {"and": [
         {"property": "Title", "title": {"starts_with": DIGEST_PREFIX}},
-        {"timestamp": "created_time", "created_time": {"on_or_after": since}},
-        {"timestamp": "created_time",
-         "created_time": {"on_or_before": now_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z")}},
+        {"timestamp": "created_time", "created_time": {"on_or_after": _z(last_noon_utc(now_utc))}},
+        {"timestamp": "created_time", "created_time": {"on_or_before": _z(now_utc)}},
     ]}
 
 
 def already_made_recently(query, now_utc: datetime) -> bool:
     """🔴 2026-11-20: Mac の launchd から 19:05 に workflow_dispatch を送るようにした。
-    GitHub の cron（予定 19:05・実測は8〜10時間遅れて翌04時ごろ）も残すので、
-    同じ日に2本目（夜のうちに入った数本だけの回）ができないよう、直近14時間に
-    まとめ行を作っていれば作らない。query(filter)->rows。失敗は例外のまま（作らない側に倒れる）。
+    GitHub の cron（予定 19:05・実測は翌朝4〜5時台に遅れて起動）も残すので、
+    「直近の JST 12:00 以降にまとめ行を作っていれば作らない」で1日1本を守る。
+    （14時間の窓だと、cron が 05:05 より遅れて動いた日はその日の 19:05 の回まで止まる＝ミハル 11/20）
+    query(filter)->rows。失敗は例外のまま（作らない側に倒れる）。
     同じ記事の二重配信は concurrency（daily_digest.yml）と「元記事を完了に」で防いでいる。"""
     return bool(query(recent_digest_filter(now_utc)))
 
 
-def _strict_query(nw, filt: dict) -> list:
+_TITLE_DAY = re.compile(r"^【海外ヘッドライン】(\d{4})年(\d{1,2})月(\d{1,2})日")
+
+
+def make_title(day, n_items: int, existing_titles: list) -> str:
+    """題。日付は記事の Date(Search) のいちばん新しい日。
+    🔴 同じ日付の回がもうあれば「その2」「その3」…を付ける（同じ題を2本作らない）。
+       例：今朝 03:57（旧方式・実行日で題）に「11月20日」ができていて、19:05 の回も記事の日が 11/20。
+    「11月2日」と「11月20日」を取り違えないよう、前方一致でなく年月日を数として照らす。"""
+    same = 0
+    for t in existing_titles:
+        m = _TITLE_DAY.match(t or "")
+        if m and (int(m.group(1)), int(m.group(2)), int(m.group(3))) == (day.year, day.month, day.day):
+            same += 1
+    suffix = f"その{same + 1}" if same else ""
+    return f"{DIGEST_PREFIX}{day.year}年{day.month}月{day.day}日{suffix} 世界の医療・保健ニュース{n_items}本"
+
+
+def titles_for_day(query, day) -> list:
+    rows = query({"property": "Title",
+                  "title": {"starts_with": f"{DIGEST_PREFIX}{day.year}年{day.month}月{day.day}日"}})
+    out = []
+    for r in rows:
+        arr = ((r.get("properties") or {}).get("Title") or {}).get("title") or []
+        out.append("".join(x.get("plain_text", "") for x in arr))
+    return out
+
+
+def digest_date(pages: list, now_jst: datetime):
+    """題の日付＝入っている記事の Date(Search)（収集日）のうち、いちばん新しい日（JST）。
+
+    🔴 2026-11-20: 実行時刻で付けていたため、cron が翌朝4時に遅れて動くと前日の記事に
+       翌日の日付が付いた（11/19 分が「11月20日」に）。
+    Date(Search) が無い記事：日付の計算から外す（題は残りの記事で決める）。
+    全部に無い：実行日（JST）にして、理由を返す（呼ぶ側がログに出す）。
+    戻り値: (date, 無かった件数)
+    """
+    days, missing = [], 0
+    for p in pages:
+        d = ((p.get("properties") or {}).get("Date(Search)") or {}).get("date") or {}
+        start = d.get("start")
+        if not start:
+            missing += 1
+            continue
+        try:
+            if "T" in start:
+                dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=_JST)
+                days.append(dt.astimezone(_JST).date())
+            else:
+                days.append(datetime.strptime(start[:10], "%Y-%m-%d").date())
+        except ValueError:
+            missing += 1
+    return (max(days) if days else now_jst.date()), missing
+
+
+def _strict_query(nw, filt: dict, page_size: int = 50) -> list:
     """検索。🔴 失敗を0件に見せない（0件だと「まだ無い」と読んで2本目を作ってしまう）。"""
     import requests
     r = requests.post(f"{nw.notion_base}/databases/{nw.database_id}/query",
-                      headers=nw.notion_headers, json={"filter": filt, "page_size": 1}, timeout=30)
+                      headers=nw.notion_headers, json={"filter": filt, "page_size": page_size}, timeout=30)
     r.raise_for_status()
     return r.json().get("results", [])
 
@@ -98,20 +166,102 @@ def self_test() -> int:
         else:
             fail += 1; print(f"  NG  {name}: got={got!r} want={want!r}")
 
-    now = datetime(2026, 11, 20, 19, 0, tzinfo=timezone.utc)   # JST 11/21 04:00（遅れた cron）
-    f = recent_digest_filter(now)
-    check("題の頭で絞る", f["and"][0], {"property": "Title", "title": {"starts_with": "【海外ヘッドライン】"}})
-    check("14時間前から", f["and"][1]["created_time"]["on_or_after"], "2026-11-20T05:00:00.000Z")
-    check("直近に1本あれば作らない", already_made_recently(lambda q: [{"id": "x"}], now), True)
-    check("無ければ作る", already_made_recently(lambda q: [], now), False)
+    J = lambda *t: datetime(*t, tzinfo=_JST)
 
-    def boom(q):
-        raise RuntimeError("HTTP 400")
+    # 偽の DB：title の starts_with と created_time の範囲だけを本物どおりに評価する
+    def fake_query(rows):
+        def q(filt):
+            conds = filt.get("and", [filt])
+            out = []
+            for r in rows:
+                good = True
+                for c in conds:
+                    if "title" in c and not r["title"].startswith(c["title"]["starts_with"]):
+                        good = False
+                    ct = c.get("created_time") or {}
+                    if "on_or_after" in ct and _z(r["created"]) < ct["on_or_after"]:
+                        good = False
+                    if "on_or_before" in ct and _z(r["created"]) > ct["on_or_before"]:
+                        good = False
+                if good:
+                    out.append({"properties": {"Title": {"title": [{"plain_text": r["title"]}]}}})
+            return out
+        return q
+
+    check("直近の正午：19:05 JST → 当日 12:00", last_noon_utc(J(2026, 11, 20, 19, 5)), J(2026, 11, 20, 12, 0))
+    check("直近の正午：05:18 JST → 前日 12:00", last_noon_utc(J(2026, 11, 21, 5, 18)), J(2026, 11, 20, 12, 0))
+
+    # 今朝 03:57 にできた「11月20日」（旧方式＝実行日で題）
+    morning = {"title": "【海外ヘッドライン】2026年11月20日 世界の医療・保健ニュース5本",
+               "created": J(2026, 11, 20, 3, 57)}
+    db = [morning]
+    q = fake_query(db)
+    check("今朝 03:57 の1本は 19:05 の回を止めない", already_made_recently(q, J(2026, 11, 20, 19, 5)), False)
+    day = datetime(2026, 11, 20).date()                         # 19:05 の回の記事の日も 11/20
+    t2 = make_title(day, 3, titles_for_day(q, day))
+    check("同じ日付の2本目は「その2」", t2, "【海外ヘッドライン】2026年11月20日その2 世界の医療・保健ニュース3本")
+    check("同じ題（日付の部分）が2本できない", len({x.split(" ")[0] for x in [morning["title"], t2]}), 2)
+    # cron が 05:18 に遅れて動いて作った1本も、その日の 19:05 の回を止めない（14時間窓だと止まった）
+    check("05:18 の1本は 19:05 の回を止めない",
+          already_made_recently(fake_query([{"title": morning["title"], "created": J(2026, 11, 20, 5, 18)}]),
+                                J(2026, 11, 20, 19, 5)), False)
+    db.append({"title": t2, "created": J(2026, 11, 20, 19, 6)})
+    check("3本目は「その3」", make_title(day, 1, titles_for_day(q, day)).split(" ")[0],
+          "【海外ヘッドライン】2026年11月20日その3")
+    check("11月2日 と 11月20日 を取り違えない",
+          make_title(datetime(2026, 11, 2).date(), 1, ["【海外ヘッドライン】2026年11月20日 世界の医療・保健ニュース5本"]).split(" ")[0],
+          "【海外ヘッドライン】2026年11月2日")
+    # 19:05 の回の後、cron が翌朝 05:18 に遅れて動いても作らない
+    check("翌朝 05:18 の cron は作らない", already_made_recently(q, J(2026, 11, 21, 5, 18)), True)
+    check("翌日 19:05 は作る", already_made_recently(q, J(2026, 11, 21, 19, 5)), False)
+
+    # 本物の _strict_query：requests.post を差し替えて 400 を返させる → 例外
+    import requests
+
+    class _R:
+        def __init__(self, code): self.status_code = code
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.HTTPError(f"{self.status_code} Client Error")
+        def json(self): return {"results": []}
+
+    class _NW:
+        notion_base, database_id, notion_headers = "https://invalid", "db", {}
+
+    orig = requests.post
     try:
-        already_made_recently(boom, now)
-        check("検索失敗は例外（作らない側）", "例外なし", "例外")
-    except RuntimeError:
-        check("検索失敗は例外（作らない側）", "例外", "例外")
+        requests.post = lambda *a, **k: _R(400)
+        try:
+            _strict_query(_NW(), recent_digest_filter(J(2026, 11, 20, 19, 5)))
+            check("_strict_query：400 は例外（0件にしない）", "例外なし", "例外")
+        except requests.HTTPError:
+            check("_strict_query：400 は例外（0件にしない）", "例外", "例外")
+        try:
+            already_made_recently(lambda f: _strict_query(_NW(), f), J(2026, 11, 20, 19, 5))
+            check("400 のとき作る側に倒れない", "作る判定", "例外")
+        except requests.HTTPError:
+            check("400 のとき作る側に倒れない", "例外", "例外")
+        requests.post = lambda *a, **k: _R(200)
+        check("_strict_query：200 は結果を返す", _strict_query(_NW(), {}), [])
+    finally:
+        requests.post = orig
+
+    # 題の日付＝記事の Date(Search) のいちばん新しい日（JST）
+    def pg(v):
+        return {"properties": {"Date(Search)": {"type": "date", "date": ({"start": v} if v else None)}}}
+    late = datetime(2026, 11, 20, 3, 56, tzinfo=_JST)          # 遅れた cron（11/19 分を束ねる）
+    check("11/19 の記事を翌朝束ねても 11/19",
+          digest_date([pg("2026-11-19T10:00:00.000+09:00"), pg("2026-11-18T23:00:00.000+09:00")], late),
+          (datetime(2026, 11, 19).date(), 0))
+    check("UTC の時刻は JST の日に直す（11/19 15:30Z＝11/20 00:30 JST）",
+          digest_date([pg("2026-11-19T15:30:00.000Z")], late), (datetime(2026, 11, 20).date(), 0))
+    check("日付だけの値も読む", digest_date([pg("2026-11-18")], late), (datetime(2026, 11, 18).date(), 0))
+    check("Date(Search) が無い記事は外す（残りで決める）",
+          digest_date([pg(None), pg("2026-11-19T09:00:00.000+09:00")], late),
+          (datetime(2026, 11, 19).date(), 1))
+    check("全部に無ければ実行日（JST）",
+          digest_date([pg(None), {"properties": {}}], late), (datetime(2026, 11, 20).date(), 2))
+
     print(f"\nself-test: {ok}件合格 / {fail}件不合格")
     return 0 if fail == 0 else 1
 
@@ -123,7 +273,7 @@ def main():
     import requests
 
     if already_made_recently(lambda q: _strict_query(nw, q), datetime.now(timezone.utc)):
-        logger.info(f"直近{ONE_PER_DAY_HOURS}時間にまとめを作成済み（1日1本）。今回は作りません")
+        logger.info("直近の JST 12:00 以降にまとめを作成済み（1日1本）。今回は作りません")
         return
 
     pages = nw.query_database({
@@ -148,8 +298,11 @@ def main():
 
     headlines = gemini_headlines(items)
 
-    today = datetime.now(_JST)
-    ep_title = f"【海外ヘッドライン】{today.strftime('%Y年%-m月%-d日')} 世界の医療・保健ニュース{len(items)}本"
+    day, missing = digest_date(pages, datetime.now(_JST))
+    if missing:
+        logger.warning(f"⚠ Date(Search) が無い記事 {missing}/{len(pages)} 件"
+                       + ("（全部に無いので実行日を題に）" if missing == len(pages) else "（日付の計算から外した）"))
+    ep_title = make_title(day, len(items), titles_for_day(lambda q: _strict_query(nw, q), day))
     lines = [f"本日の海外の医療・保健ニュースを、まとめてお届けします。"]
     for i, h in enumerate(headlines):
         lines.append(h.strip())
