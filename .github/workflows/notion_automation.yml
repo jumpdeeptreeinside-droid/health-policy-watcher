@@ -50,7 +50,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: automation-error-logs
-          path: notion_automation.log
+          # 🔴 2026-11-20: 実行は cd src なのでログは src/ にできる（旧 path はずれていた）
+          path: src/notion_automation.log
           retention-days: 7
 
       - name: 失敗通知メールを送信

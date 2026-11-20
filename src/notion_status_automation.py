@@ -310,8 +310,21 @@ def self_test() -> int:
             print(f"  NG  {name}: got={got!r} want={want!r}")
 
     # 1) 判定（昨日の形＝完了／-／- を含む）
-    check("完了/-/- は両方進める",
-          sorted(plan_advance(_fake_page("a", "完了", "-", "-"))), sorted([WEB_PROP, PODCAST_PROP]))
+    # 🔴 キーだけでなく書く値まで固定する（ミハル 11/20：WEB_NEXT を「公開待ち」に変えても
+    #    キーしか見ない検査は12件とも合格のままだった）。期待値は定数でなく文字列で直書きする。
+    check("完了/-/- は両方を 投稿待ち・音声化待ち に進める（値まで一致）",
+          plan_advance(_fake_page("a", "完了", "-", "-")),
+          {"Status(Web)": {"status": {"name": "投稿待ち"}},
+           "Status(Podcast)": {"status": {"name": "音声化待ち"}}})
+    shapes = [("完了", w, p) for w in (None, "-", "投稿待ち", "スケジュール待ち", "完了")
+              for p in (None, "-", "音声化待ち", "試聴待ち", "公開待ち", "投稿待ち", "完了")]
+    written = set()
+    for c, w, p in shapes:
+        for k, v in plan_advance(_fake_page("s", c, w, p)).items():
+            written.add((k, v["status"]["name"]))
+    check("書く値は {Web→投稿待ち, Podcast→音声化待ち} の部分集合（公開待ち・試聴待ち・完了を書かない）",
+          written <= {("Status(Web)", "投稿待ち"), ("Status(Podcast)", "音声化待ち")} and bool(written),
+          True)
     check("完了/投稿待ち/- は Podcast だけ",
           sorted(plan_advance(_fake_page("b", "完了", "投稿待ち", "-"))), [PODCAST_PROP])
     check("完了/完了/試聴待ち は何もしない",
